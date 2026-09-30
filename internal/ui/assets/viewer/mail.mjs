@@ -76,7 +76,7 @@ export function Avatar({ from, big }) {
 const FOLDERS = [["inbox", "Inbox"], ["sent", "Sent"], ["spam", "Spam"], ["deleted", "Deleted"]];
 
 export function MailViewer({ account, onClose }) {
-  const [stage, setStage] = useState("ask"); // ask | px | main
+  const [stage, setStage] = useState("ask"); // ask | px | connect | error | main
   // proxy choice ({proxy_mode, proxy, proxy_urls} or null) lives on R.current
   // (below), NOT in state: the original read window._mailProxy fresh at call
   // time, so the load issued right after picking proxies must see it too.
@@ -102,6 +102,12 @@ export function MailViewer({ account, onClose }) {
   const [pxMenu, setPxMenu] = useState(""); // file | server | ""
 
   const [listErr, setListErr] = useState("");
+  // sign-in animation state: step text, how far we got, per-proxy results
+  const [connStep, setConnStep] = useState(0); // 0 connecting, 1 login page, 2 credentials, 3 token, 4 mailbox
+  const [connProxy, setConnProxy] = useState("");
+  const [connTries, setConnTries] = useState([]);
+  const [connErr, setConnErr] = useState("");
+  const [connBusy, setConnBusy] = useState(false);
   const [delAsk, setDelAsk] = useState(null); // {ids, purge, text, err, busy}
   const [readHtml, setReadHtml] = useState(null);
   const frameRef = useRef(null);
@@ -123,6 +129,15 @@ export function MailViewer({ account, onClose }) {
     if ("listErr" in patch) setListErr(patch.listErr);
   };
 
+  const STAGE_ORDER = ["connecting", "login_page", "credentials", "token", "mailbox"];
+  const STAGE_LABEL = {
+    connecting: "Connecting through proxy",
+    login_page: "Opening Microsoft login page",
+    credentials: "Sending credentials",
+    token: "Getting mailbox token",
+    mailbox: "Loading inbox",
+  };
+
   const pack = fromFilter ? (packs[fromFilter] || { mails: [], total: 0, more: true, ready: false }) : null;
   const activeList = fromFilter ? (pack ? pack.mails : []) : mails;
 
@@ -136,6 +151,11 @@ export function MailViewer({ account, onClose }) {
     setQuery(""); setSelAll(false);
     setPxPath(""); setPxUrls([""]); setPxFileCount("0 proxies"); setPxCount("0 proxies");
     setPxMode("file"); setPxMenu(""); setReadHtml(null);
+    setConnStep(0); setConnProxy(""); setConnTries([]); setConnErr(""); setConnBusy(false);
+  };
+
+  const resetConn = () => {
+    setConnStep(0); setConnProxy(""); setConnTries([]); setConnErr(""); setConnBusy(true);
   };
 
   /* ---- opening flow: probe first, else ask about proxies ---- */
@@ -406,19 +426,87 @@ export function MailViewer({ account, onClose }) {
   const startMail = (usePx) => {
     if (usePx) { setStage("px"); loadPxLists(); return; }
     R.current.proxy = null;
-    setStage("main");
-    loadPage(false);
+    runConnect();
   };
   const pxGo = () => {
-    // Write the ref BEFORE loading: loadPage below runs in this same tick and
-    // must see the chosen proxies (the original relied on the window.* global).
+    // Write the ref BEFORE connecting: the connect call reads it in this same tick.
     R.current.proxy = {
       proxy_mode: pxMode || "file",
       proxy: pxPath || "",
       proxy_urls: pxUrls.map((s) => s.trim()).filter(Boolean),
     };
-    setStage("main");
-    loadPage(false);
+    runConnect();
+  };
+
+  /* ---- animated sign-in: stream progress, then main client or error screen ---- */
+  const runConnect = async () => {
+    resetConn();
+    setStage("connect");
+    const px = R.current.proxy;
+    const body = Object.assign(
+      { email: account.email, password: account.password },
+      px || {}
+    );
+    const handleLine = (lineRaw, state) => {
+      const line = String(lineRaw || "").trim();
+      if (!line) return;
+      let ev;
+      try { ev = JSON.parse(line); } catch (e) { return; }
+      if (ev.type === "stage") {
+        const i = STAGE_ORDER.indexOf(ev.stage);
+        if (i > 0) state.step = i;
+      } else if (ev.type === "try") {
+        state.proxy = ev.proxy || "";
+        state.tries.push(ev);
+      } else if (ev.type === "done") {
+        state.done = ev;
+      }
+    };
+    try {
+      const res = await fetch("/api/mail/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const reader = res.body && res.body.getReader ? res.body.getReader() : null;
+      if (!reader) throw new Error("streaming not supported");
+      const dec = new TextDecoder();
+      let buf = "";
+      const state = { step: 0, proxy: "", tries: [], done: null };
+      let lastPaint = 0;
+      const paint = () => {
+        setConnStep(state.step);
+        setConnProxy(state.proxy);
+        setConnTries(state.tries.slice());
+      };
+      for (;;) {
+        const { value, done: rdDone } = await reader.read();
+        if (rdDone) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() || "";
+        lines.forEach((l) => handleLine(l, state));
+        if (performance.now() - lastPaint > 60) { lastPaint = performance.now(); paint(); }
+      }
+      if (buf) handleLine(buf, state);
+      paint();
+      const done = state.done || { ok: false, error: "connection ended unexpectedly" };
+      if (done.ok) {
+        setConnStep(4);
+        setConnBusy(false);
+        put({ mails: done.messages || [], total: done.total || 0 });
+        setMore(!!done.more || ((done.total || 0) > (done.messages || []).length));
+        setStage("main");
+        return;
+      }
+      setConnBusy(false);
+      setConnErr(done.error || "Could not sign in to this mailbox");
+      setStage("error");
+    } catch (e) {
+      setConnBusy(false);
+      setConnErr(String(e && e.message ? e.message : e));
+      setStage("error");
+    }
   };
 
   if (!account) return null;
@@ -640,6 +728,65 @@ export function MailViewer({ account, onClose }) {
             <div style=${{ display: "flex", gap: "8px", marginTop: "14px" }}>
               <button type="button" onClick=${pxGo}>Continue</button>
               <button class="secondary" type="button" onClick=${() => setStage("ask")}>Cancel</button>
+            </div>
+          </div>
+        </div>`}
+
+      ${stage === "connect" && html`
+        <div class="mail-wrap" style=${{ height: "auto", width: "min(460px, 100%)" }}>
+          <div class="mail-head">
+            <div><div class="muted">EMAIL VIEWER</div><b>Signing in…</b></div>
+            <button class="secondary" type="button" disabled=${connBusy} onClick=${onClose}>Close</button>
+          </div>
+          <div class="conn-body">
+            <div class="conn-orb">
+              <span class="conn-orb-core"></span>
+              <span class="conn-orb-ring"></span>
+              <span class="conn-orb-ring conn-orb-ring2"></span>
+            </div>
+            <div class="conn-what">${STAGE_LABEL[STAGE_ORDER[connStep]] || "Working…"}</div>
+            ${connProxy && html`<div class="conn-via">via <code>${connProxy}</code></div>`}
+            <div class="conn-steps">
+              ${STAGE_ORDER.slice(1).map((s, i) => html`
+                <div key=${s} class=${"conn-step" + (connStep > i + 1 ? " done" : connStep === i + 1 ? " active" : "")}>
+                  <span class="conn-dot">${connStep > i + 1 ? "✓" : ""}</span>
+                  <span>${STAGE_LABEL[s]}</span>
+                </div>`)}
+            </div>
+            ${connTries.length > 0 && html`
+              <div class="conn-tries">
+                ${connTries.map((t, i) => html`
+                  <div key=${i} class=${"conn-try" + (t.ok ? " ok" : " bad")}>
+                    <span class="conn-try-dot"></span>
+                    <code>${t.proxy}</code>
+                    <span class="conn-try-note">${t.ok ? "connected" : (t.err || "failed")}</span>
+                  </div>`)}
+              </div>`}
+            <div class="conn-spin" aria-hidden="true"></div>
+          </div>
+        </div>`}
+
+      ${stage === "error" && html`
+        <div class="mail-wrap" style=${{ height: "auto", width: "min(460px, 100%)" }}>
+          <div class="mail-head">
+            <div><div class="muted">EMAIL VIEWER</div><b>Couldn't sign in</b></div>
+            <button class="secondary" type="button" onClick=${onClose}>Close</button>
+          </div>
+          <div class="conn-body">
+            <div class="conn-x">!</div>
+            <div class="conn-what">${connErr || "Could not sign in to this mailbox"}</div>
+            ${connTries.length > 0 && html`
+              <div class="conn-tries">
+                ${connTries.map((t, i) => html`
+                  <div key=${i} class=${"conn-try" + (t.ok ? " ok" : " bad")}>
+                    <span class="conn-try-dot"></span>
+                    <code>${t.proxy}</code>
+                    <span class="conn-try-note">${t.ok ? "connected" : (t.err || "failed")}</span>
+                  </div>`)}
+              </div>`}
+            <div class="conn-btns">
+              <button type="button" onClick=${runConnect}>Retry</button>
+              <button class="secondary" type="button" onClick=${() => { setStage("px"); loadPxLists(); }}>Change proxies</button>
             </div>
           </div>
         </div>`}

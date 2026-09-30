@@ -38,18 +38,39 @@ function makeEnv(routes) {
   global.cancelAnimationFrame = (id) => clearTimeout(id);
   global.getComputedStyle = dom.window.getComputedStyle.bind(dom.window);
   const calls = [];
-  global.fetch = async (url, opts) => {
+  const fetchMock = async (url, opts) => {
     calls.push({ url: String(url), method: (opts && opts.method) || "GET", body: opts && opts.body });
     const u = String(url).split("?")[0];
     const h = routes[u] || routes[String(url)];
     if (!h) return { ok: false, status: 404, json: async () => ({}) };
-    const data = typeof h === "function" ? h({ url: String(url), method: (opts && opts.method) || "GET", body: opts && opts.body ? JSON.parse(opts.body) : null }) : h;
+    const data = typeof h === "function" ? await h({ url: String(url), method: (opts && opts.method) || "GET", body: opts && opts.body ? JSON.parse(opts.body) : null }) : h;
+    if (data && data.body && data.json) return data; // already a full response (ndjson stream)
     return { ok: true, status: 200, json: async () => data };
   };
+  global.fetch = fetchMock;
   return { dom, calls };
 }
 
 const assert = (cond, msg) => { if (!cond) { errors.push("ASSERT FAIL: " + msg); } else { console.log("  ✓", msg); } };
+
+// Build a fetch Response-like NDJSON stream (for /api/mail/connect mocks).
+function ndjsonResponse(events) {
+  const enc = new TextEncoder();
+  let i = 0;
+  return {
+    ok: true, status: 200,
+    body: {
+      getReader() {
+        return {
+          read: async () => (i < events.length
+            ? { value: enc.encode(JSON.stringify(events[i++]) + "\n"), done: false }
+            : { value: undefined, done: true }),
+        };
+      },
+    },
+    json: async () => events[events.length - 1],
+  };
+}
 
 /* ------- SVG visual assertions (regression guards for the 1.0.9 bugs) ------- */
 
@@ -173,6 +194,7 @@ console.log("== dashboard ==");
 /* ---------------- viewer ---------------- */
 console.log("== viewer ==");
 {
+  let failNextConnect = false; // when true, the next /api/mail/connect fails
   const { dom, calls } = makeEnv({
     "/api/stats": { total: 2, with_pass: 2, file_size: 2048, file_path: "C:/valid.txt", modified: "m1", loaded_at: "l1", tag_counts: { "Has Payment": 1, "Fortnite": 1 }, countries: { "US": 2 } },
     "/api/accounts": (req) => ({ accounts: [{ id: 1, line: 2, email: "a@b.com", password: "pw1", tags: ["Has Payment"], fields: { Country: "US", "V-Bucks": "500" }, raw: "a@b.com:pw1" }], count: 1, page: 1, pages: 1 }),
@@ -180,6 +202,44 @@ console.log("== viewer ==");
     "/api/mail/probe": (() => { let n = 0; return () => { n++; return n === 1
       ? { ok: true, total: 1, messages: [{ id: "m1", subject: "Test mail", from: "Sender <sender@example.com>", date: "2026-09-29T14:30:00.000Z", preview: "hello world" }] }
       : { ok: false, need_login: true }; }; })(),
+    "/api/mail/connect": (req) => {
+      const b = req.body || {};
+      const usePx = !!(b.proxy || (b.proxy_urls && b.proxy_urls.length));
+      if (failNextConnect) {
+        failNextConnect = false;
+        return ndjsonResponse([
+          { type: "start", proxies: 2 },
+          { type: "stage", stage: "login_page" },
+          { type: "try", proxy: "1.2.3.4:8080", ok: false, err: "connect: connection refused" },
+          { type: "stage", stage: "login_page" },
+          { type: "try", proxy: "5.6.7.8:3128", ok: false, err: "dial tcp: i/o timeout" },
+          { type: "done", ok: false, error: "couldn't create client / bad proxies: all proxies exhausted" },
+        ]);
+      }
+      if (!usePx) {
+        // no proxies chosen → first attempt fails, second (direct) succeeds
+        return ndjsonResponse([
+          { type: "start", proxies: 1 },
+          { type: "stage", stage: "login_page" },
+          { type: "try", proxy: "1.2.3.4:8080", ok: false, err: "connect: connection refused" },
+          { type: "stage", stage: "login_page" },
+          { type: "stage", stage: "credentials" },
+          { type: "stage", stage: "token" },
+          { type: "stage", stage: "mailbox" },
+          { type: "try", proxy: "direct (no proxy)", ok: true, stage: "mailbox" },
+          { type: "done", ok: true, email: b.email, total: 1, count: 1, more: false, messages: [{ id: "m1", subject: "Test mail", from: "Sender <sender@example.com>", date: "2026-09-29T14:30:00.000Z", preview: "hello world" }] },
+        ]);
+      }
+      return ndjsonResponse([
+        { type: "start", proxies: 1 },
+        { type: "stage", stage: "login_page" },
+        { type: "stage", stage: "credentials" },
+        { type: "stage", stage: "token" },
+        { type: "stage", stage: "mailbox" },
+        { type: "try", proxy: "p.host:9000", ok: true, stage: "mailbox" },
+        { type: "done", ok: true, email: b.email, total: 1, count: 1, more: false, messages: [{ id: "m1", subject: "Test mail", from: "Sender <sender@example.com>", date: "2026-09-29T14:30:00.000Z", preview: "hello world" }] },
+      ]);
+    },
     "/api/mail/list": { ok: true, total: 1, messages: [{ id: "m1", subject: "Test mail", from: "Sender <sender@example.com>", date: "2026-09-29T14:30:00.000Z", preview: "hello world" }] },
     "/api/mail/body": { ok: true, html: "<b>full body</b>" },
     "/api/proxy-lists": [{ name: "srv1", type: "server", urls: ["http://x/p.txt"], count: 5 }],
@@ -195,7 +255,7 @@ console.log("== viewer ==");
   assert([...d.querySelectorAll(".chip")].some((c) => c.textContent.includes("Has Payment")), "quick tag chips");
   assertNoTemplateGarbage(d, "viewer");
 
-  // open mail viewer
+  // open mail viewer (probe ok on first open → straight into the client)
   [...d.querySelectorAll("button")].find((b) => b.textContent === "Email Viewer").click();
   await sleep(80);
   assert(d.body.textContent.includes("EMAIL VIEWER"), "mail modal open");
@@ -207,28 +267,23 @@ console.log("== viewer ==");
   assert(d.querySelector(".mail-frame"), "message iframe rendered");
   assert([...d.querySelectorAll("button")].some((b) => b.textContent.trim() === "Delete"), "delete button present");
 
-  // close the modal fully (original behavior: onClose unmounts the viewer) and
-  // reopen with a FRESH component instance — state must not leak between opens.
-  const closeBtns = [...d.querySelectorAll("button")].filter((b) => b.textContent.trim() === "Close");
+  // close and reopen with a FRESH component (probe now fails → ask/connect flow)
+  let closeBtns = [...d.querySelectorAll("button")].filter((b) => b.textContent.trim() === "Close");
   closeBtns[closeBtns.length - 1].click();
   await sleep(40);
   assert(!d.body.textContent.includes("EMAIL VIEWER"), "mail modal fully closed on Close");
 
-  // Regression guard: mail list requests must carry the proxy choice the user
-  // just made. The original read window._mailProxy fresh at call time; a stale
-  // React state closure dropped it from the FIRST list call after Continue.
+  // Regression guard: the connect request must carry the proxy choice the user
+  // just made (proxy_mode + urls), matching the original window._mailProxy flow.
   calls.length = 0;
   [...d.querySelectorAll("button")].find((b) => b.textContent === "Email Viewer").click();
   await sleep(60);
   assert(d.body.textContent.includes("Use proxies for this mailbox login?"), "mail ask-proxy prompt on fresh open");
-  const askScope = [...d.querySelectorAll("button")].filter((b) => b.textContent.trim() === "No" || b.textContent.trim() === "Yes");
-  askScope.find((b) => b.textContent.trim() === "Yes").click();
+  [...d.querySelectorAll("button")].find((b) => b.textContent.trim() === "Yes").click();
   await sleep(40);
   assert(d.body.textContent.includes("PROXY SOURCE"), "proxy source step shown");
   // pick a saved server list: switch to server mode, open its saved menu
-  const serverModeBtn = [...d.querySelectorAll("button")].find((b) => b.textContent.trim() === "Server");
-  assert(!!serverModeBtn, "server mode toggle present");
-  serverModeBtn.click();
+  [...d.querySelectorAll("button")].find((b) => b.textContent.trim() === "Server").click();
   await sleep(20);
   const savedSrvBtn = [...d.querySelectorAll("button")].find((b) => b.textContent.trim() === "Saved servers");
   assert(!!savedSrvBtn, "saved servers button present");
@@ -239,12 +294,33 @@ console.log("== viewer ==");
   srvRow.click();
   await sleep(20);
   [...d.querySelectorAll("button")].find((b) => b.textContent.trim() === "Continue").click();
+  await sleep(80);
+  const connectCall = calls.filter((c) => c.url === "/api/mail/connect").pop();
+  assert(!!connectCall, "POST /api/mail/connect issued after Continue");
+  const connBody = connectCall && JSON.parse(connectCall.body);
+  assert(connBody && connBody.proxy_mode === "server" && Array.isArray(connBody.proxy_urls) && connBody.proxy_urls[0] === "http://x/p.txt", "connect payload carries chosen proxy (mode+urls)");
+  // animated connect ran and success landed in the main client (no error screen)
+  assert(!d.body.textContent.includes("Couldn't sign in"), "no error screen after connect success");
+  assert(d.body.textContent.includes("Test mail"), "mail list rendered after connect success");
+
+  // failure path: fresh open where every proxy attempt fails → error screen
+  closeBtns = [...d.querySelectorAll("button")].filter((b) => b.textContent.trim() === "Close");
+  closeBtns[closeBtns.length - 1].click();
+  await sleep(40);
+  failNextConnect = true;
+  [...d.querySelectorAll("button")].find((b) => b.textContent === "Email Viewer").click();
   await sleep(60);
-  const listCall = calls.filter((c) => c.url === "/api/mail/list").pop();
-  assert(!!listCall, "mail list call issued after proxy continue");
-  const listBody = listCall && JSON.parse(listCall.body);
-  assert(listBody && listBody.proxy_mode === "server" && Array.isArray(listBody.proxy_urls) && listBody.proxy_urls[0] === "http://x/p.txt", "mail list carries chosen proxy (mode+urls) on first load");
-  assert(d.body.textContent.includes("Test mail"), "mail list rendered after proxied load");
+  [...d.querySelectorAll("button")].find((b) => b.textContent.trim() === "Yes").click();
+  await sleep(30);
+  [...d.querySelectorAll("button")].find((b) => b.textContent.trim() === "Continue").click();
+  await sleep(80);
+  assert(d.body.textContent.includes("Couldn't sign in"), "error screen shown when all proxies fail");
+  assert(d.body.textContent.includes("all proxies exhausted"), "failure reason surfaced on error screen");
+  const retryBtn = [...d.querySelectorAll("button")].find((b) => b.textContent.trim() === "Retry");
+  assert(!!retryBtn, "retry button on error screen");
+  retryBtn.click();
+  await sleep(60);
+  assert(d.body.textContent.includes("Test mail"), "retry succeeded → mail client shown");
 }
 
 if (errors.length) {

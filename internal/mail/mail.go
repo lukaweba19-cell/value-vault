@@ -578,6 +578,82 @@ func HandleList(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "email": req.Email, "messages": msgs, "count": len(msgs), "total": total, "from": req.From, "size": req.Size, "more": more})
 }
 
+// HandleConnect streams the sign-in as NDJSON progress lines so the UI can
+// animate proxies being tried and token steps. Request body is the same
+// {email,password,proxy,proxy_mode,proxy_urls} shape as /api/mail/list.
+// Lines: {"type":"stage","stage":"login_page"|"credentials"|"token"|"mailbox"}
+// and {"type":"try","proxy":...,"stage":...,"ok":false,"err":...} per attempt,
+// then a final {"type":"done","ok":true,"email":...} or
+// {"type":"done","ok":false,"error":...}.
+func HandleConnect(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != stdhttp.MethodPost {
+		writeNDJSON(w, map[string]any{"type": "done", "ok": false, "error": "POST only"})
+		return
+	}
+	var req struct {
+		Email     string   `json:"email"`
+		Password  string   `json:"password"`
+		Proxy     string   `json:"proxy"`
+		ProxyMode string   `json:"proxy_mode"`
+		ProxyURLs []string `json:"proxy_urls"`
+	}
+	if json.NewDecoder(r.Body).Decode(&req) != nil || strings.TrimSpace(req.Email) == "" {
+		writeNDJSON(w, map[string]any{"type": "done", "ok": false, "error": "email required"})
+		return
+	}
+	email := strings.TrimSpace(req.Email)
+	var tryPx []string
+	if strings.EqualFold(req.ProxyMode, "server") && len(req.ProxyURLs) > 0 {
+		if px, err := proxy.FetchFromURLs(req.ProxyURLs); err == nil {
+			tryPx = px
+		}
+	} else if p := strings.TrimSpace(req.Proxy); p != "" {
+		if px, err := proxy.Load(p); err == nil && len(px) > 0 {
+			tryPx = px
+		} else {
+			tryPx = []string{p}
+		}
+	}
+	if len(tryPx) == 0 {
+		tryPx = []string{""}
+	}
+	if len(tryPx) > 5 {
+		tryPx = tryPx[:5]
+	}
+	// writeNDJSON flushes after every line, so the UI sees each step live.
+	writeNDJSON(w, map[string]any{"type": "start", "proxies": len(tryPx)})
+	msgs, err := ConnectMailbox(email, req.Password, tryPx,
+		func(stage string) {
+			writeNDJSON(w, map[string]any{"type": "stage", "stage": stage})
+		},
+		func(res ConnResult) {
+			writeNDJSON(w, map[string]any{"type": "try", "proxy": res.Proxy, "stage": res.Stage, "ok": res.Ok, "err": res.Err})
+		})
+	if err != nil {
+		writeNDJSON(w, map[string]any{"type": "done", "ok": false, "error": err.Error()})
+		return
+	}
+	// Success: hand the UI the first page so it doesn't need a second round-trip.
+	mailSessMu.Lock()
+	total := mailLastTotal
+	mailSessMu.Unlock()
+	more := len(msgs) >= 10
+	if total > 0 {
+		more = len(msgs) < total
+	}
+	writeNDJSON(w, map[string]any{"type": "done", "ok": true, "email": email, "messages": msgs, "count": len(msgs), "total": total, "more": more})
+}
+
+func writeNDJSON(w stdhttp.ResponseWriter, v any) {
+	b, _ := json.Marshal(v)
+	w.Write(append(b, '\n'))
+	if f, ok := w.(stdhttp.Flusher); ok {
+		f.Flush()
+	}
+}
+
 func countTotal(v interface{}) int {
 	switch val := v.(type) {
 	case map[string]interface{}:
@@ -1193,7 +1269,84 @@ func ListMail(email, password, proxyStr string, from, size int, query string) ([
 	return nil, last
 }
 
+// StageFn receives human-meaningful sign-in progress steps while a mailbox
+// login runs: "login_page" → "credentials" → "token" → "mailbox". It may be nil.
+type StageFn func(stage string)
+
+func emitStage(onStage StageFn, stage string) {
+	if onStage != nil {
+		onStage(stage)
+	}
+}
+
+// ListMailOnce signs in through proxyStr and fetches one page (no progress callbacks).
 func ListMailOnce(email, password, proxyStr string, from, size int, query, folder string) ([]Msg, error) {
+	return listMailOnceStaged(email, password, proxyStr, from, size, query, folder, nil)
+}
+
+// ConnResult reports what happened while trying one proxy during connect.
+// Stage is the last sign-in step reached; Err explains the failure, if any.
+type ConnResult struct {
+	Proxy string `json:"proxy"`
+	Stage string `json:"stage"`
+	Ok    bool   `json:"ok"`
+	Err   string `json:"err,omitempty"`
+}
+
+func maskProxy(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "direct (no proxy)"
+	}
+	if at := strings.LastIndex(p, "@"); at >= 0 {
+		return p[at+1:]
+	}
+	return p
+}
+
+// ConnectMailbox signs in to the mailbox, trying each candidate proxy in
+// order until one works. It reports every attempt through onTry and every
+// sign-in step through onStage so the UI can animate the process.
+func ConnectMailbox(email, password string, tryPx []string, onStage StageFn, onTry func(ConnResult)) ([]Msg, error) {
+	var msgs []Msg
+	var last error
+	for _, p := range tryPx {
+		stage := "connecting" // how far this attempt got, for diagnostics
+		staged := func(s string) {
+			stage = s
+			if onStage != nil {
+				onStage(s)
+			}
+		}
+		if onTry != nil {
+			onTry(ConnResult{Proxy: maskProxy(p), Stage: stage})
+		}
+		ms, err := listMailOnceStaged(email, password, p, 0, 100, "kind:email", "inbox", staged)
+		res := ConnResult{Proxy: maskProxy(p), Ok: err == nil, Stage: stage}
+		if err != nil {
+			res.Err = err.Error()
+		} else {
+			res.Stage = "mailbox"
+			msgs = ms
+		}
+		if onTry != nil {
+			onTry(res)
+		}
+		if err == nil {
+			return msgs, nil
+		}
+		last = err
+		onStage = nil // progress steps are only meaningful for the first attempt
+	}
+	if last == nil {
+		last = fmt.Errorf("couldn't create client / bad proxies")
+	} else {
+		last = fmt.Errorf("couldn't create client / bad proxies: %v", last)
+	}
+	return nil, last
+}
+
+func listMailOnceStaged(email, password, proxyStr string, from, size int, query, folder string, onStage StageFn) ([]Msg, error) {
 	preset := nettls.NextPreset()
 	client, noRedir := nettls.NewPairProfile(proxyStr, 30*time.Second, 25*time.Second, preset.Profile)
 	if client == nil || noRedir == nil {
@@ -1201,6 +1354,7 @@ func ListMailOnce(email, password, proxyStr string, from, size int, query, folde
 	}
 	jar := client.GetCookieJar()
 	ua := preset.UA
+	emitStage(onStage, "login_page")
 	authStart := "https://login.live.com/oauth20_authorize.srf?" + url.Values{
 		"client_id":     {OutlookClientID},
 		"response_type": {"token"},
@@ -1224,6 +1378,7 @@ func ListMailOnce(email, password, proxyStr string, from, size int, query, folde
 	if ppft == "" {
 		return nil, fmt.Errorf("login page failed")
 	}
+	emitStage(onStage, "credentials")
 	postURL := "https://login.live.com/ppsecure/post.srf?client_id=" + OutlookClientID +
 		"&redirect_uri=" + url.QueryEscape(OutlookRedirect) +
 		"&response_type=token&scope=" + url.QueryEscape("service::outlook.office.com::MBI_SSL") +
@@ -1257,6 +1412,7 @@ func ListMailOnce(email, password, proxyStr string, from, size int, query, folde
 	}
 	body2, _ := io.ReadAll(resp2.Body)
 	resp2.Body.Close()
+	emitStage(onStage, "token")
 	combined := resp2.Header.Get("Location") + "\n" + string(body2)
 	req3, _ := http.NewRequest("GET", authStart+"&prompt=none", nil)
 	req3.Header.Set("User-Agent", ua)
@@ -1317,6 +1473,7 @@ func ListMailOnce(email, password, proxyStr string, from, size int, query, folde
 		}
 	}
 	RememberSess(email, token, cid)
+	emitStage(onStage, "mailbox")
 	if rest, alive, _ := listFolderREST(token, cid, email, folder, from, size); alive {
 		return rest, nil
 	}
