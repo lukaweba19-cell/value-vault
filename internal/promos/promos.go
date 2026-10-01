@@ -29,6 +29,11 @@ var knownTitles = map[string]string{
 	"2BAE856D8BBD4652872E7A566DFE1B12": "PSO2 New Genesis Monthly Items",
 	"EE0E30590A954DA482382E71BE5A44D4": "Star Trek Online Captain's Edition",
 	"E6D9E945214340C087B15373C0418E77": "Rainbow Six Siege IQ Verbena Bundle",
+	"3B92C630E660441E87CBCD1882C947C3": "Sea of Thieves Vociferous Speaking Trumpet",
+	"CC9D2B5A649B4770A79D924C4E5C221D": "Delta Force Season Perks",
+	"F7A4BD5F87FD4B898669F3B41C43FFC7": "PSO2 New Genesis October Member Monthly Bonus",
+	"7CE1B04B6D784CC79312BE6573DB3BE7": "PUBG Exclusive Survivor Pack #3",
+	"47A97E552F2B457FAF091F40BF443BF6": "Throne and Liberty Masquerade and Jolt Items",
 }
 
 // Title returns the display name for an offer id from the hand-maintained
