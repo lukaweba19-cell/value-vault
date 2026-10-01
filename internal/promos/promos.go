@@ -1,5 +1,9 @@
 // Package promos claims still-available Game Pass partner offers and
 // formats promo/claimed-promo lines for hits.
+//
+// Display names come only from the hand-maintained knownTitles map (offer id
+// -> title). Unknown ids are written as the raw resource (code or link) so a
+// new offer never shows a guessed name; add its id here to get a nice title.
 package promos
 
 import (
@@ -8,7 +12,6 @@ import (
 	http "github.com/bogdanfinn/fhttp"
 	"io"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
 
@@ -28,98 +31,22 @@ var knownTitles = map[string]string{
 	"E6D9E945214340C087B15373C0418E77": "Rainbow Six Siege IQ Verbena Bundle",
 }
 
-// Titles pulled from offer API / claim response when id is not in the map yet.
-var titleHints = []struct {
-	sub   string
-	title string
-}{
-	{"delta force", "Delta Force - Season 11 Benefits Pack"},
-	{"deltaforce", "Delta Force - Season 11 Benefits Pack"},
+// Title returns the display name for an offer id from the hand-maintained
+// knownTitles map. Unknown ids return "" so the caller writes the raw
+// resource (code or link) instead of a guessed name.
+func Title(offerID string) string {
+	return knownTitles[strings.ToUpper(strings.TrimSpace(offerID))]
 }
 
-func ExtractOfferTitle(m map[string]interface{}) string {
-	if m == nil {
-		return ""
+// formatLine renders one promo entry: "Title [resource]" when the offer id
+// is in knownTitles, otherwise the raw resource (code or link) as-is.
+func formatLine(offerID, resource string) string {
+	if t := Title(offerID); t != "" {
+		return fmt.Sprintf("%s [%s]", t, resource)
 	}
-	keys := []string{
-		"title", "Title", "productTitle", "ProductTitle", "displayName", "DisplayName",
-		"name", "Name", "localizedTitle", "offerTitle", "OfferTitle", "friendlyName",
-		"description", "Description",
-	}
-	for _, k := range keys {
-		if s, ok := m[k].(string); ok {
-			s = strings.TrimSpace(s)
-			if s != "" && len(s) < 120 {
-				return s
-			}
-		}
-	}
-	// nested product / localization blobs
-	for _, nk := range []string{"product", "Product", "localizedStrings", "LocalizedStrings"} {
-		if sub, ok := m[nk].(map[string]interface{}); ok {
-			if t := ExtractOfferTitle(sub); t != "" {
-				return t
-			}
-		}
-	}
-	return ""
-}
-
-func isGenericTitle(s string) bool {
-	low := strings.ToLower(strings.TrimSpace(s))
-	switch low {
-	case "", "store token", "token", "perk", "offer", "product", "null", "undefined", "xbox store code", "store":
-		return true
-	}
-	return false
-}
-
-func Title(offerID, resource, apiTitle string) string {
-	apiTitle = strings.TrimSpace(apiTitle)
-	offerID = strings.ToUpper(strings.TrimSpace(offerID))
-	// Prefer explicit ID map first (covers store-token style claims)
-	if t, ok := knownTitles[offerID]; ok {
-		return t
-	}
-	if apiTitle != "" && !isGenericTitle(apiTitle) {
-		low := strings.ToLower(apiTitle)
-		for _, h := range titleHints {
-			if strings.Contains(low, h.sub) {
-				return h.title
-			}
-		}
-		return apiTitle
-	}
-	res := strings.TrimSpace(resource)
-	low := strings.ToLower(res + " " + apiTitle)
-	switch {
-	case strings.Contains(low, "promos.discord"):
-		return "3 Months Discord Nitro"
-	case strings.Contains(low, "discord.com/settings/connections"):
-		return "Discord Orbs"
-	case strings.Contains(low, "discord"):
-		return "Discord Perk"
-	case strings.Contains(low, "doordash"):
-		return "40% Off DoorDash"
-	case strings.Contains(low, "fubo"):
-		return "FuboTV Xbox Perks"
-	case strings.Contains(low, "spotify"):
-		return "Spotify"
-	case strings.Contains(low, "netflix"):
-		return "Netflix"
-	case strings.Contains(low, "delta force"), strings.Contains(low, "deltaforce"):
-		return "Delta Force - Season 11 Benefits Pack"
-	case strings.Contains(low, "xgp_xdl"), strings.Contains(low, "design-lab"), strings.Contains(low, "designlab"), strings.Contains(low, "game-pass-member-offer"):
-		return "15% Off Xbox Design Lab"
-	case regexp.MustCompile(`(?i)^[A-Z0-9]{5}(-[A-Z0-9]{5}){4}$`).MatchString(res):
-		// 5x5 Xbox store code with no title from API
-		return "Xbox Store code"
-	default:
-		if u, err := url.Parse(res); err == nil && u.Host != "" {
-			return strings.TrimPrefix(u.Host, "www.")
-		}
-		return "Perk"
-	}
+	// Unknown offer id: write the raw resource instead of a guessed name.
+	// Add the id to knownTitles to get a pretty title.
+	return resource
 }
 
 // CheckGamePass claims only still-available Game Pass partner offers
@@ -236,13 +163,13 @@ func CheckGamePass(email, password, proxyStr string) string {
 	arr, _ := root["offers"].([]interface{})
 	var fresh, claimed []string
 	seen := map[string]bool{}
-	add := func(dst *[]string, offerID, resource, apiTitle string) {
+	add := func(dst *[]string, offerID, resource string) {
 		resource = strings.TrimSpace(resource)
 		if resource == "" || seen[resource] {
 			return
 		}
 		seen[resource] = true
-		*dst = append(*dst, fmt.Sprintf("%s [%s]", Title(offerID, resource, apiTitle), resource))
+		*dst = append(*dst, formatLine(offerID, resource))
 	}
 	for _, raw := range arr {
 		off, ok := raw.(map[string]interface{})
@@ -252,10 +179,9 @@ func CheckGamePass(email, password, proxyStr string) string {
 		status, _ := off["offerStatus"].(string)
 		res, _ := off["resource"].(string)
 		oid, _ := off["offerId"].(string)
-		apiTitle := ExtractOfferTitle(off)
 		switch strings.ToLower(status) {
 		case "claimed":
-			add(&claimed, oid, res, apiTitle)
+			add(&claimed, oid, res)
 		case "available":
 			if oid == "" {
 				continue
@@ -270,21 +196,11 @@ func CheckGamePass(email, password, proxyStr string) string {
 			}
 			bc, _ := io.ReadAll(respC.Body)
 			respC.Body.Close()
-			var claim map[string]interface{}
-			_ = json.Unmarshal(bc, &claim)
 			resource := nettls.ExtractJSONString(string(bc), "resource")
 			if resource == "" {
 				resource = res
 			}
-			claimTitle := ExtractOfferTitle(claim)
-			if claimTitle == "" {
-				claimTitle = apiTitle
-			}
-			// Persist title by offer id when we learn it
-			if claimTitle != "" && oid != "" {
-				knownTitles[strings.ToUpper(oid)] = Title(oid, resource, claimTitle)
-			}
-			add(&fresh, oid, resource, claimTitle)
+			add(&fresh, oid, resource)
 		}
 	}
 	var out []string
