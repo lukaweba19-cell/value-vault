@@ -1,46 +1,38 @@
-// Boot: single-instance lock on 127.0.0.1:27180 (main.go follows that
-// lifetime) and waking the Go backend when it isn't up yet.
-import 'dart:async';
+// Boot: the Windows single-instance mutex. The Go engine itself is loaded
+// in-process by api.dart (dart:ffi) — nothing to launch, no ports to hold.
+import 'dart:ffi';
 import 'dart:io';
 
-import 'api.dart';
+import 'package:ffi/ffi.dart';
 
-/// Hold the native-UI lock for as long as this process is alive.
-/// Returns null when another instance already holds it.
-Future<ServerSocket?> acquireLock() async {
+Pointer<Void>? _instanceMutex;
+
+/// The held single-instance mutex handle (kept reachable for the whole
+/// process lifetime so the window stays unique).
+Pointer<Void>? get heldInstanceMutex => _instanceMutex;
+
+/// Returns false when another instance of the app is already running.
+/// The mutex handle is kept alive for the whole process lifetime.
+bool acquireSingleInstance() {
+  if (!Platform.isWindows) return true;
   try {
-    final s = await ServerSocket.bind(InternetAddress.loopbackIPv4, 27180);
-    return s;
-  } on Exception {
-    return null;
-  }
-}
-
-/// The backend normally launches us. When the user starts the client first
-/// (or the backend crashed), wake the exe that sits next to us.
-Future<void> ensureBackend() async {
-  if (await Api.backendUp()) return;
-  final dir = await _exeDir();
-  if (dir == null) return;
-  for (final name in const ['xbox-checker.exe', 'xbox-checker']) {
-    final p = '$dir${Platform.pathSeparator}$name';
-    if (File(p).existsSync()) {
-      try {
-        await Process.start(p, [],
-            workingDirectory: dir, mode: ProcessStartMode.detached);
-      } catch (_) {/* already running or blocked */}
-      break;
+    final k32 = DynamicLibrary.open('kernel32.dll');
+    final createMutex = k32.lookupFunction<
+        Pointer<Void> Function(Pointer<Void>, Int32, Pointer<Utf16>),
+        Pointer<Void> Function(Pointer<Void>, int, Pointer<Utf16>)>(
+        'CreateMutexW');
+    final lastError = k32
+        .lookupFunction<Uint32 Function(), int Function()>('GetLastError');
+    final name = 'Local\\SoloCheckerSingleInstance'.toNativeUtf16();
+    try {
+      _instanceMutex = createMutex(nullptr, 0, name);
+    } finally {
+      calloc.free(name);
     }
-  }
-  await Api.waitForBackend(
-      timeout: const Duration(seconds: 15));
-}
-
-Future<String?> _exeDir() async {
-  try {
-    final exe = Platform.resolvedExecutable;
-    return File(exe).parent.path;
+    // 183 == ERROR_ALREADY_EXISTS: a second window refuses to start.
+    return lastError() != 183;
   } catch (_) {
-    return null;
+    // Never brick development builds over the mutex.
+    return true;
   }
 }

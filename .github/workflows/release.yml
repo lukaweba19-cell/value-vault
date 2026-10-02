@@ -82,6 +82,20 @@ jobs:
           test -f bundle/solo_checker.exe
           ls -la bundle
 
+      - name: Build Go engine shared library (dart:ffi)
+        shell: bash
+        run: |
+          if ! command -v gcc >/dev/null 2>&1; then
+            choco install mingw -y --no-progress
+            export PATH="/c/ProgramData/chocolatey/lib/mingw/tools/install/mingw64/bin:$PATH"
+          fi
+          gcc --version
+          CGO_ENABLED=1 go build -buildmode=c-shared -o xbox_checker.dll .
+          mv xbox_checker.dll bundle/
+          rm -f xbox_checker.h
+          test -f bundle/xbox_checker.dll
+          ls -la bundle/xbox_checker.dll
+
       - name: Upload release bundle
         uses: actions/upload-artifact@v4
         with:

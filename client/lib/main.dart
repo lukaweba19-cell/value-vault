@@ -1,8 +1,6 @@
 // SOLO Checker — Flutter desktop client entrypoint.
-// Talks to the Go backend over 127.0.0.1:2718 (dashboard) and :2719 (viewer).
-import 'dart:async';
-import 'dart:io';
-
+// One process: the window is Flutter, the engine is the Go shared library
+// loaded in-process via dart:ffi. No sockets, no embedded web content.
 import 'package:flutter/material.dart';
 
 import 'api.dart';
@@ -13,34 +11,18 @@ import 'theme.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Single instance: if the lock port is taken, another window is alive —
-  // main.go keeps serving while that lock answers, so we just exit.
-  final lock = await acquireLock();
-  if (lock == null) {
-    exit(0);
-  }
+  // Single instance: the OS mutex refuses a second window.
+  if (!acquireSingleInstance()) return;
 
-  // The backend normally starts us; if we were started first, wake it.
-  unawaited(ensureBackend());
+  // Load the Go engine (xbox_checker.dll sits next to this exe).
+  final err = await FfiBackend.start();
 
-  runApp(SoloApp(lock: lock));
+  runApp(SoloApp(bootError: err));
 }
 
-class SoloApp extends StatefulWidget {
-  final ServerSocket lock;
-  const SoloApp({super.key, required this.lock});
-
-  @override
-  State<SoloApp> createState() => _SoloAppState();
-}
-
-class _SoloAppState extends State<SoloApp> {
-  @override
-  void dispose() {
-    // Releasing the lock tells the backend it may exit.
-    widget.lock.close();
-    super.dispose();
-  }
+class SoloApp extends StatelessWidget {
+  final String? bootError;
+  const SoloApp({super.key, this.bootError});
 
   @override
   Widget build(BuildContext context) {
@@ -48,14 +30,15 @@ class _SoloAppState extends State<SoloApp> {
       title: 'SOLO Checker',
       debugShowCheckedModeBanner: false,
       theme: buildTheme(),
-      home: const BootGate(),
+      home: BootGate(bootError: bootError),
     );
   }
 }
 
-/// Shows a connecting screen until the local backend answers, then the shell.
+/// Smoke-checks the in-process engine once, then shows the shell.
 class BootGate extends StatefulWidget {
-  const BootGate({super.key});
+  final String? bootError;
+  const BootGate({super.key, this.bootError});
 
   @override
   State<BootGate> createState() => _BootGateState();
@@ -72,12 +55,11 @@ class _BootGateState extends State<BootGate> {
   }
 
   Future<void> _wait() async {
-    final ok = await Api.waitForBackend(
-        timeout: const Duration(seconds: 12));
+    final r = await Api.get('/api/state');
     if (!mounted) return;
     setState(() {
-      _ready = ok;
-      _failed = !ok;
+      _ready = r.ok;
+      _failed = !r.ok;
     });
   }
 
@@ -93,24 +75,22 @@ class _BootGateState extends State<BootGate> {
               const SizedBox(
                 width: 42,
                 height: 42,
-                child: CircularProgressIndicator(
-                    strokeWidth: 3, color: T.acc),
+                child:
+                    CircularProgressIndicator(strokeWidth: 3, color: T.acc),
               ),
               const SizedBox(height: 18),
               Text(
-                _failed ? 'Backend not responding' : 'Connecting to backend…',
+                _failed ? 'Engine not responding' : 'Starting engine…',
                 style: const TextStyle(fontSize: 13.5, color: T.mut),
               ),
               if (_failed) ...[
                 const SizedBox(height: 6),
-                const MutedSmall(
-                    'Start xbox-checker.exe next to this client, then reopen.'),
+                MutedSmall(widget.bootError ??
+                    'xbox_checker.dll could not be loaded — reinstall the app.'),
                 const SizedBox(height: 16),
                 TextButton(
                   onPressed: () {
-                    setState(() {
-                      _failed = false;
-                    });
+                    setState(() => _failed = false);
                     _wait();
                   },
                   child: const Text('Retry'),
@@ -128,6 +108,5 @@ class MutedSmall extends StatelessWidget {
   final String text;
   const MutedSmall(this.text, {super.key});
   @override
-  Widget build(BuildContext context) =>
-      Text(text, style: mutedStyle(12));
+  Widget build(BuildContext context) => Text(text, style: mutedStyle(12));
 }
