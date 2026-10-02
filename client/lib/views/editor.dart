@@ -74,12 +74,23 @@ class _EditorViewState extends State<EditorView> {
   String _sigTailGen = '';
   final _savePathGen = TextEditingController();
 
+  // Persistent controllers — rebuilt-per-build controllers (the old pattern)
+  // got their cursor reset by every parent rebuild while typing.
+  late final TextEditingController _pathCtrl;
+  late final TextEditingController _mailTypesCtrl;
+  late final TextEditingController _urlFilterCtrl;
+  late final TextEditingController _genOutCtrl;
+
   StreamSubscription<Map<String, dynamic>>? _anSub;
   StreamSubscription<Map<String, dynamic>>? _fSub;
 
   @override
   void initState() {
     super.initState();
+    _pathCtrl = TextEditingController(text: _path);
+    _mailTypesCtrl = TextEditingController(text: _mailTypes);
+    _urlFilterCtrl = TextEditingController(text: _urlFilter);
+    _genOutCtrl = TextEditingController(text: _genOut);
     _loadBanners();
   }
 
@@ -96,6 +107,10 @@ class _EditorViewState extends State<EditorView> {
     _passPath.dispose();
     _count.dispose();
     _savePathGen.dispose();
+    _pathCtrl.dispose();
+    _mailTypesCtrl.dispose();
+    _urlFilterCtrl.dispose();
+    _genOutCtrl.dispose();
     super.dispose();
   }
 
@@ -133,7 +148,10 @@ class _EditorViewState extends State<EditorView> {
       _msg = d['done'] == true
           ? 'Analyzed ${d['lines'] ?? 0} lines'
           : 'Analyzing… ${d['lines'] ?? 0} lines';
-      if (d['path'] != null) _path = '${d['path']}';
+      if (d['path'] != null) {
+        _path = '${d['path']}';
+        _pathCtrl.text = _path;
+      }
       _lines = (d['lines'] is num) ? (d['lines'] as num).toInt() : 0;
       _size = (d['size'] is num) ? (d['size'] as num).toInt() : 0;
       _domains = _statList(d['domains']);
@@ -175,7 +193,10 @@ class _EditorViewState extends State<EditorView> {
     if (r.data is! Map || r.data['path'] == null) return;
     final p = r.data['path'] as String;
     if (kind == 'editor') {
-      setState(() => _path = p);
+      setState(() {
+        _path = p;
+        _pathCtrl.text = p;
+      });
       _loadFile(p);
     } else if (kind == 'editor-names') {
       setState(() => _namePath.text = p);
@@ -335,7 +356,10 @@ class _EditorViewState extends State<EditorView> {
       'count': int.tryParse(_count.text) ?? 500,
     });
     if (r.data is Map) {
-      setState(() => _genOut = '${r.data['text'] ?? ''}');
+      setState(() {
+        _genOut = '${r.data['text'] ?? ''}';
+        _genOutCtrl.text = _genOut;
+      });
       _paint(Map<String, dynamic>.from(r.data));
     }
   }
@@ -469,9 +493,7 @@ class _EditorViewState extends State<EditorView> {
                 Expanded(
                   child: TextInput(
                       hint: 'combos-export.txt',
-                      controller: TextEditingController.fromValue(
-                          TextEditingValue(text: _savePathGen.text)),
-                      onChanged: (v) => _savePathGen.text = v),
+                      controller: _savePathGen),
                 ),
                 const SizedBox(width: 8),
                 TextBtn(label: 'Browse', onPressed: () async {
@@ -636,8 +658,7 @@ class _EditorViewState extends State<EditorView> {
             Expanded(
               child: TextInput(
                 hint: 'combo / ULP path',
-                controller: TextEditingController.fromValue(
-                    TextEditingValue(text: _path)),
+                controller: _pathCtrl,
                 onChanged: (v) => _path = v,
               ),
             ),
@@ -681,8 +702,7 @@ class _EditorViewState extends State<EditorView> {
             label: 'Email types',
             child: TextInput(
               hint: '@outlook @hotmail @msn',
-              controller: TextEditingController.fromValue(
-                  TextEditingValue(text: _mailTypes)),
+              controller: _mailTypesCtrl,
               onChanged: (v) {
                 _mailTypes = v;
                 _filterState = 'idle';
@@ -693,8 +713,7 @@ class _EditorViewState extends State<EditorView> {
             label: 'URL / domain',
             child: TextInput(
               hint: 'epicgames.com',
-              controller: TextEditingController.fromValue(
-                  TextEditingValue(text: _urlFilter)),
+              controller: _urlFilterCtrl,
               onChanged: (v) {
                 _urlFilter = v;
                 _filterState = 'idle';
@@ -800,11 +819,9 @@ class _EditorViewState extends State<EditorView> {
         else
           Row(children: [
             Expanded(
-              child: TextInput(
+              child:              TextInput(
                   hint: 'names list file',
-                  controller: TextEditingController.fromValue(
-                      TextEditingValue(text: _namePath.text)),
-                  onChanged: (v) => _namePath.text = v),
+                  controller: _namePath),
             ),
             const SizedBox(width: 8),
             TextBtn(label: 'Browse', onPressed: () => _browse('editor-names')),
@@ -836,11 +853,9 @@ class _EditorViewState extends State<EditorView> {
         else
           Row(children: [
             Expanded(
-              child: TextInput(
+              child:              TextInput(
                   hint: 'password list file',
-                  controller: TextEditingController.fromValue(
-                      TextEditingValue(text: _passPath.text)),
-                  onChanged: (v) => _passPath.text = v),
+                  controller: _passPath),
             ),
             const SizedBox(width: 8),
             TextBtn(label: 'Browse', onPressed: () => _browse('editor-pass')),
@@ -862,7 +877,7 @@ class _EditorViewState extends State<EditorView> {
         const SizedBox(height: 14),
         Text('GENERATED PREVIEW', style: labelStyle()),
         const SizedBox(height: 6),
-        TextInput(maxLines: 7, mono: true, controller: TextEditingController.fromValue(TextEditingValue(text: _genOut)), onChanged: (v) => _genOut = v),
+        TextInput(maxLines: 7, mono: true, controller: _genOutCtrl, onChanged: (v) => _genOut = v),
         const SizedBox(height: 12),
         Row(
           children: [

@@ -154,29 +154,37 @@ class _FillPainter extends CustomPainter {
   bool shouldRepaint(covariant _FillPainter old) => old.d != d;
 }
 
-/// Tiny SVG path parser (M, L, H, V, Z + relative m/l/h/v/z, one arc no-op).
+/// Tiny SVG path parser (M, L, H, V, Z + relative m/l/h/v/z).
+///
+/// Tokenizes by regex instead of whitespace: the icon paths are compact SVG
+/// (`M12 5v14M5 12h14`) where letters are glued to their numbers — the old
+/// whitespace split produced garbage tokens and drew NOTHING, which emptied
+/// every icon box in the app.
 Path _parsePath(String d) {
   final path = Path();
-  final tokens = d
-      .replaceAll(',', ' ')
-      .split(RegExp(r'\s+'))
-      .where((t) => t.isNotEmpty)
+  final tokens = RegExp(r'[A-Za-z]|-?\d*\.?\d+(?:e-?\d+)?')
+      .allMatches(d)
+      .map((m) => m.group(0)!)
       .toList();
   double cx = 0, cy = 0;
   double sx = 0, sy = 0;
   String cmd = '';
   var i = 0;
   double num() {
-    final v = double.parse(tokens[i]);
+    if (i >= tokens.length) return 0;
+    final v = double.tryParse(tokens[i]) ?? 0;
     i++;
     return v;
   }
 
   while (i < tokens.length) {
     final t = tokens[i];
-    if (RegExp(r'^[A-Za-z]$').hasMatch(t)) {
+    if (t.length == 1 && RegExp(r'^[A-Za-z]$').hasMatch(t)) {
       cmd = t;
       i++;
+    } else if (cmd.isEmpty) {
+      i++;
+      continue;
     }
     switch (cmd) {
       case 'M':
@@ -229,8 +237,21 @@ Path _parsePath(String d) {
         break;
       case 'A':
       case 'a':
-        // Not used by the icon set; skip 7 params defensively.
         i += 7;
+        break;
+      case 'C':
+      case 'c':
+        i += 6;
+        break;
+      case 'S':
+      case 's':
+      case 'Q':
+      case 'q':
+        i += 4;
+        break;
+      case 'T':
+      case 't':
+        i += 2;
         break;
       default:
         i++;

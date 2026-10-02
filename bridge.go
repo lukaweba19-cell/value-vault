@@ -26,10 +26,10 @@ import (
 	"context"
 	"encoding/json"
 	stdhttp "net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"unsafe"
-
 	"xbox-checker/internal/core"
 	"xbox-checker/internal/r2store"
 )
@@ -111,9 +111,18 @@ func newBridgeRequest(method, path, body string) (*stdhttp.Request, error) {
 func serveSafe(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	defer func() {
 		if rec := recover(); rec != nil {
+			bootLogf("panic serving %s: %v\n%s", r.URL.Path, rec, debug.Stack())
 			if rb, ok := w.(*bufferWriter); ok {
 				rb.code = 500
 				rb.buf.WriteString(`{"error":"internal error"}`)
+			} else if sw, ok := w.(*streamWriter); ok && sw.ctx.Err() == nil {
+				// A streaming route must always end with a terminal frame,
+				// otherwise the UI reports a misleading generic error
+				// ("connection ended unexpectedly") and the real cause is lost.
+				line, _ := json.Marshal(map[string]any{
+					"type": "done", "ok": false, "error": "internal error — see solo-launch.log",
+				})
+				_, _ = w.Write(append(line, '\n'))
 			}
 		}
 	}()

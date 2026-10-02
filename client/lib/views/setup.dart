@@ -26,23 +26,66 @@ class SetupView extends StatefulWidget {
 }
 
 class _SetupViewState extends State<SetupView> {
-  bool _proxyMenu = false;
   List<Map<String, dynamic>> _saved = [];
   bool _saveOpen = false;
   final _saveName = TextEditingController();
+
+  // Persistent controllers: the old code built a fresh controller from the
+  // form value on every rebuild, so the 1.2s shell poll kept resetting the
+  // cursor mid-typing (typing/deleting workers was impossible).
+  late final TextEditingController _comboCtrl;
+  late final TextEditingController _kwCtrl;
+  late final TextEditingController _workersCtrl;
+  late final TextEditingController _proxyCtrl;
+  final List<TextEditingController> _urlCtrls = [];
 
   RunForm get form => widget.form;
 
   @override
   void initState() {
     super.initState();
+    _comboCtrl = TextEditingController(text: form.combo);
+    _kwCtrl = TextEditingController(text: form.kw);
+    _workersCtrl = TextEditingController(text: form.workers);
+    _proxyCtrl = TextEditingController(text: form.proxy);
+    _syncUrlCtrls();
     _loadSaved();
   }
 
   @override
   void dispose() {
     _saveName.dispose();
+    _comboCtrl.dispose();
+    _kwCtrl.dispose();
+    _workersCtrl.dispose();
+    _proxyCtrl.dispose();
+    for (final c in _urlCtrls) {
+      c.dispose();
+    }
     super.dispose();
+  }
+
+  /// Keeps one controller per server-proxy row, in sync with form.proxyUrls.
+  /// Call only on structural/programmatic changes (add/remove row, saved
+  /// selection) — never during typing.
+  void _syncUrlCtrls() {
+    while (_urlCtrls.length > form.proxyUrls.length) {
+      _urlCtrls.removeLast().dispose();
+    }
+    while (_urlCtrls.length < form.proxyUrls.length) {
+      _urlCtrls.add(TextEditingController(text: form.proxyUrls[_urlCtrls.length]));
+    }
+    for (var i = 0; i < _urlCtrls.length; i++) {
+      if (_urlCtrls[i].text != form.proxyUrls[i]) {
+        _urlCtrls[i].text = form.proxyUrls[i];
+      }
+    }
+  }
+
+  Future<void> _openSavedPicker(String kind) async {
+    await _loadSaved();
+    if (!mounted) return;
+    await showAppModal<void>(context, _savedPicker(kind));
   }
 
   Future<void> _loadSaved() async {
@@ -72,13 +115,14 @@ class _SetupViewState extends State<SetupView> {
         urls.add('');
       }
       setState(() => form.proxyUrls = urls);
+      _syncUrlCtrls();
     } else {
       setState(() {
         form.proxy = (x['path'] ?? '') as String;
         form.proxyFileCount = '0 proxies';
+        _proxyCtrl.text = form.proxy;
       });
     }
-    setState(() => _proxyMenu = false);
   }
 
   Future<void> _delSaved(Map<String, dynamic> x) async {
@@ -94,8 +138,10 @@ class _SetupViewState extends State<SetupView> {
       setState(() {
         if (kind == 'proxy') {
           form.proxy = r.data['path'] as String;
+          _proxyCtrl.text = form.proxy;
         } else {
           form.combo = r.data['path'] as String;
+          _comboCtrl.text = form.combo;
         }
       });
     }
@@ -171,8 +217,7 @@ class _SetupViewState extends State<SetupView> {
               Expanded(
                 child: TextInput(
                   hint: 'combo file',
-                  controller: TextEditingController.fromValue(
-                      TextEditingValue(text: form.combo)),
+                  controller: _comboCtrl,
                   onChanged: (v) => form.combo = v,
                 ),
               ),
@@ -204,16 +249,14 @@ class _SetupViewState extends State<SetupView> {
           final kw = Field(
             label: 'Keywords',
             child: TextInput(
-              controller: TextEditingController.fromValue(
-                  TextEditingValue(text: form.kw)),
+              controller: _kwCtrl,
               onChanged: (v) => form.kw = v,
             ),
           );
           final wk = Field(
             label: 'Workers',
             child: TextInput(
-              controller: TextEditingController.fromValue(
-                  TextEditingValue(text: form.workers)),
+              controller: _workersCtrl,
               onChanged: (v) => form.workers = v,
             ),
           );
@@ -306,8 +349,7 @@ class _SetupViewState extends State<SetupView> {
             Expanded(
               child: TextInput(
                 hint: 'proxy file',
-                controller: TextEditingController.fromValue(
-                    TextEditingValue(text: form.proxy)),
+                controller: _proxyCtrl,
                 onChanged: (v) => form.proxy = v,
               ),
             ),
@@ -344,24 +386,9 @@ class _SetupViewState extends State<SetupView> {
             ),
             TextBtn(label: 'Check', onPressed: _testFile),
             Tag(text: form.proxyFileCount ?? '0 proxies'),
-            // saved lists dropdown
-            Stack(
-              children: [
-                TextBtn(
-                  label: 'Saved lists',
-                  onPressed: () {
-                    setState(() => _proxyMenu = !_proxyMenu);
-                    _loadSaved();
-                  },
-                ),
-                if (_proxyMenu)
-                  Positioned(
-                    top: 42,
-                    left: 0,
-                    child: _savedMenu('file'),
-                  ),
-              ],
-            ),
+            // saved lists picker (modal — a dropdown here was painted over
+            // by the sections below it, so rows could never be clicked)
+            TextBtn(label: 'Saved lists', onPressed: () => _openSavedPicker('file')),
           ],
         ),
       ],
@@ -377,9 +404,8 @@ class _SetupViewState extends State<SetupView> {
             padding: const EdgeInsets.only(bottom: 8),
             child: TextInput(
               hint: 'https://example.com/proxies.txt',
-              controller: TextEditingController.fromValue(
-                  TextEditingValue(text: form.proxyUrls[i])),
-              onChanged: (v) => setState(() => form.proxyUrls[i] = v),
+              controller: _urlCtrls[i],
+              onChanged: (v) => form.proxyUrls[i] = v,
             ),
           ),
         const SizedBox(height: 2),
@@ -389,101 +415,108 @@ class _SetupViewState extends State<SetupView> {
           children: [
             TextBtn(
                 label: '+',
-                onPressed: () =>
-                    setState(() => form.proxyUrls.add(''))),
+                onPressed: () => setState(() {
+                  form.proxyUrls.add('');
+                  _syncUrlCtrls();
+                })),
             if (form.proxyUrls.length > 1)
               TextBtn(
                   label: '–',
-                  onPressed: () => setState(() => form.proxyUrls.removeLast())),
+                  onPressed: () => setState(() {
+                    form.proxyUrls.removeLast();
+                    _syncUrlCtrls();
+                  })),
             TextBtn(
                 label: 'Save list',
                 onPressed: () => setState(() => _saveOpen = true)),
             TextBtn(label: 'Check', onPressed: _testServer),
             Tag(text: form.proxyCount ?? '0 proxies'),
-            Stack(
-              children: [
-                TextBtn(
-                  label: 'Saved servers',
-                  onPressed: () {
-                    setState(() => _proxyMenu = !_proxyMenu);
-                    _loadSaved();
-                  },
-                ),
-                if (_proxyMenu)
-                  Positioned(
-                    top: 42,
-                    left: 0,
-                    child: _savedMenu('server'),
-                  ),
-              ],
-            ),
+            TextBtn(
+                label: 'Saved servers',
+                onPressed: () => _openSavedPicker('server')),
           ],
         ),
       ],
     );
   }
 
-  Widget _savedMenu(String kind) {
+  Widget _savedPicker(String kind) {
     final rows = _rowsFor(kind);
     return Container(
-      width: 340,
-      constraints: const BoxConstraints(maxHeight: 260),
-      padding: const EdgeInsets.all(7),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: T.card,
         border: Border.all(color: T.line),
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: const [
-          BoxShadow(color: Color(0x80000000), blurRadius: 40, offset: Offset(0, 16)),
-        ],
+        borderRadius: BorderRadius.circular(16),
       ),
-      child: SingleChildScrollView(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (rows.isEmpty)
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                child: Muted('Nothing saved'),
-              ),
-            ...rows.map((x) {
-              final detail = kind == 'server'
-                  ? '${(x['urls'] as List?)?.length ?? 0} urls · ${x['count'] ?? 0} proxies'
-                  : '${x['count'] ?? 0} proxies · ${x['path'] ?? ''}';
-              return InkWell(
-                borderRadius: BorderRadius.circular(8),
-                onTap: () => _useSaved(x),
-                child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text((x['name'] ?? 'list') as String,
-                                style: const TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w700)),
-                            const SizedBox(height: 3),
-                            Tag(text: detail),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      TextBtn(
-                          label: '✕',
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 9, vertical: 6),
-                          onPressed: () => _delSaved(x)),
-                    ],
-                  ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  kind == 'server' ? 'Saved servers' : 'Saved lists',
+                  style: const TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.w700),
                 ),
-              );
-            }),
-          ],
-        ),
+              ),
+              TextBtn(
+                label: 'Close',
+                kind: BtnKind.secondary,
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 6),
+                onPressed: () => Navigator.of(context).pop(),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (rows.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+              child: Muted('Nothing saved'),
+            ),
+          ...rows.map((x) {
+            final detail = kind == 'server'
+                ? '${(x['urls'] as List?)?.length ?? 0} urls · ${x['count'] ?? 0} proxies'
+                : '${x['count'] ?? 0} proxies · ${x['path'] ?? ''}';
+            return InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: () {
+                _useSaved(x);
+                Navigator.of(context).pop();
+              },
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text((x['name'] ?? 'list') as String,
+                              style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700)),
+                          const SizedBox(height: 3),
+                          Tag(text: detail),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    TextBtn(
+                        label: '✕',
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 9, vertical: 6),
+                        onPressed: () => _delSaved(x)),
+                  ],
+                ),
+              ),
+            );
+          }),
+        ],
       ),
     );
   }

@@ -671,14 +671,16 @@ class _ViewerScreenState extends State<ViewerScreen> {
             width: 22,
             height: 22,
             decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [Color(0xFF8B6CFF), T.acc2]),
               borderRadius: BorderRadius.circular(7),
             ),
-            alignment: Alignment.center,
-            child: const XboxMark(size: 15),
+            clipBehavior: Clip.antiAlias,
+            child: Image.asset(
+              'assets/solo_icon.png',
+              width: 22,
+              height: 22,
+              fit: BoxFit.cover,
+              errorBuilder: (_, _, _) => const XboxMark(size: 15),
+            ),
           ),
           const SizedBox(width: 9),
           Text('SOLO Checker',
@@ -1191,6 +1193,11 @@ class _MailViewerState extends State<MailViewer> {
   Timer? _savedTimer;
   int _openSeq = 0;
   final TextEditingController _searchCtrl = TextEditingController();
+  // Persistent proxy-source controllers: rebuilding them per build (the old
+  // TextEditingController.fromValue(...) pattern) reset the field on every
+  // shell poll and made the inputs impossible to edit.
+  final TextEditingController _pxPathCtrl = TextEditingController();
+  final List<TextEditingController> _pxUrlCtrls = [];
 
   @override
   void initState() {
@@ -1202,7 +1209,27 @@ class _MailViewerState extends State<MailViewer> {
   void dispose() {
     _savedTimer?.cancel();
     _searchCtrl.dispose();
+    _pxPathCtrl.dispose();
+    for (final c in _pxUrlCtrls) {
+      c.dispose();
+    }
     super.dispose();
+  }
+
+  void _syncPxPath() {
+    if (_pxPathCtrl.text != _pxPath) _pxPathCtrl.text = _pxPath;
+  }
+
+  void _syncPxUrlCtrls() {
+    while (_pxUrlCtrls.length < _pxUrls.length) {
+      _pxUrlCtrls.add(TextEditingController(text: _pxUrls[_pxUrlCtrls.length]));
+    }
+    while (_pxUrlCtrls.length > _pxUrls.length) {
+      _pxUrlCtrls.removeLast().dispose();
+    }
+    for (var i = 0; i < _pxUrlCtrls.length; i++) {
+      if (_pxUrlCtrls[i].text != _pxUrls[i]) _pxUrlCtrls[i].text = _pxUrls[i];
+    }
   }
 
   /* ---- state helpers ---- */
@@ -2172,6 +2199,7 @@ class _MailViewerState extends State<MailViewer> {
   }
 
   Widget _pxFileUI() {
+    _syncPxPath();
     final rows = _pxRows('file');
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2182,8 +2210,7 @@ class _MailViewerState extends State<MailViewer> {
               child: TextField(
                 style: const TextStyle(fontSize: 13, color: T.txt),
                 decoration: fieldInputDecoration(hint: 'proxy file'),
-                controller: TextEditingController.fromValue(
-                    TextEditingValue(text: _pxPath, selection: TextSelection.collapsed(offset: _pxPath.length))),
+                controller: _pxPathCtrl,
                 onChanged: (v) => _pxPath = v,
               ),
             ),
@@ -2259,6 +2286,7 @@ class _MailViewerState extends State<MailViewer> {
   }
 
   Widget _pxServerUI() {
+    _syncPxUrlCtrls();
     final rows = _pxRows('server');
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2270,10 +2298,7 @@ class _MailViewerState extends State<MailViewer> {
               style: const TextStyle(fontSize: 13, color: T.txt),
               decoration:
                   fieldInputDecoration(hint: 'https://list/proxies.txt'),
-              controller: TextEditingController.fromValue(TextEditingValue(
-                  text: _pxUrls[i],
-                  selection: TextSelection.collapsed(
-                      offset: _pxUrls[i].length))),
+              controller: _pxUrlCtrls[i],
               onChanged: (v) => _pxUrls[i] = v,
             ),
           ),

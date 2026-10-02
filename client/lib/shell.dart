@@ -81,11 +81,19 @@ class _AppShellState extends State<AppShell> {
     final r = await Api.get('/api/state');
     if (!mounted || r.data is! Map) return;
     final data = r.data as Map;
-    setState(() {
-      live = data['running'] == true;
-      final u = data['uid'];
-      if (u is String && u.isNotEmpty) uid = u;
-    });
+    final nowLive = data['running'] == true;
+    var nowUid = uid;
+    final u = data['uid'];
+    if (u is String && u.isNotEmpty) nowUid = u;
+    // Only rebuild when something actually changed. This poll used to call
+    // setState every 1.2s, which rebuilt every view under the cursor and
+    // reset focused text fields mid-typing.
+    if (nowLive != live || nowUid != uid) {
+      setState(() {
+        live = nowLive;
+        uid = nowUid;
+      });
+    }
   }
 
   void setView(String v) {
@@ -106,7 +114,6 @@ class _AppShellState extends State<AppShell> {
       return;
     }
     form.err = '';
-    setView('run');
     final body = <String, dynamic>{
       'combo': combo,
       'proxy': form.proxy,
@@ -122,7 +129,12 @@ class _AppShellState extends State<AppShell> {
       'fortnite_on': form.capFn,
     };
     final res = await Api.post('/api/start', body);
-    if (!res.ok && mounted) {
+    if (!mounted) return;
+    if (res.ok) {
+      setView('run');
+    } else {
+      // Stay on the form and show the engine's actual reason instead of
+      // flashing the run view and bouncing back.
       form.err = res.text.isEmpty ? 'Start failed' : res.text;
       setView('setup');
     }
@@ -282,18 +294,16 @@ class _TopBar extends StatelessWidget {
             width: 22,
             height: 22,
             decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [Color(0xFF8B6CFF), T.acc2]),
               borderRadius: BorderRadius.circular(7),
-              boxShadow: const [
-                BoxShadow(
-                    color: Color(0x666A45FF), blurRadius: 8, offset: Offset(0, 2)),
-              ],
             ),
-            alignment: Alignment.center,
-            child: const XboxMark(size: 15),
+            clipBehavior: Clip.antiAlias,
+            child: Image.asset(
+              'assets/solo_icon.png',
+              width: 22,
+              height: 22,
+              fit: BoxFit.cover,
+              errorBuilder: (_, _, _) => const XboxMark(size: 15),
+            ),
           ),
           const SizedBox(width: 9),
           Text('SOLO Checker',
@@ -358,22 +368,38 @@ class _SideBar extends StatelessWidget {
                   border: Border(
                       bottom: BorderSide(color: T.lineSoft, width: 1))),
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
                   Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      _LogoTile(child: const XboxMark(size: 28)),
+                      _LogoTile(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: Image.asset(
+                            'assets/solo_icon.png',
+                            width: 26,
+                            height: 26,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, _, _) =>
+                                const XboxMark(size: 26),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      _LogoTile(child: const XboxMark(size: 26)),
                       const SizedBox(width: 8),
                       _LogoTile(
-                          epic: true, child: const EpicMark(size: 24)),
+                          epic: true, child: const EpicMark(size: 22)),
                     ],
                   ),
                   if (!narrow) ...[
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 9),
                     const Text(
                       'Xbox Full Capture + Keyword Inboxer + Promos / Codes',
+                      textAlign: TextAlign.center,
                       style: TextStyle(
-                        fontSize: 13,
+                        fontSize: 12.5,
                         fontWeight: FontWeight.w800,
                         color: T.grn,
                         height: 1.3,
@@ -382,6 +408,7 @@ class _SideBar extends StatelessWidget {
                     const SizedBox(height: 2),
                     const Text(
                       'Epic Games / Fortnite Full Capture',
+                      textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: 11.5,
                         fontWeight: FontWeight.w700,
