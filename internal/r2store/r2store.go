@@ -21,7 +21,7 @@ import (
 	"xbox-checker/internal/keys"
 )
 
-const AppVersion = "1.0.10"
+const AppVersion = "1.0.11"
 
 func SignGet(key string) (*stdhttp.Request, error) {
 	key = strings.TrimPrefix(key, "/")
