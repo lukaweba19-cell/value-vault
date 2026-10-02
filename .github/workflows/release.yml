@@ -80,6 +80,9 @@ jobs:
           cp -a client/build/windows/x64/runner/Release/. bundle/
           cp dist-test/xbox-checker.exe bundle/
           test -f bundle/solo_checker.exe
+          # The launcher refuses to start without the Flutter asset bundle —
+          # fail the build here instead of shipping a client that cannot run.
+          test -d bundle/data/flutter_assets
           ls -la bundle
 
       - name: Build Go engine shared library (dart:ffi)
@@ -90,7 +93,25 @@ jobs:
             export PATH="/c/ProgramData/chocolatey/lib/mingw/tools/install/mingw64/bin:$PATH"
           fi
           gcc --version
-          CGO_ENABLED=1 go build -buildmode=c-shared -o xbox_checker.dll .
+          # Link the engine DLL statically: a dynamic dependency on MinGW
+          # runtimes (libgcc/libwinpthread) that end users do not have makes
+          # the Flutter app fail to load the engine on clean machines.
+          if ! CGO_ENABLED=1 go build -buildmode=c-shared -ldflags="-extldflags '-static'" -o xbox_checker.dll .; then
+            echo "static link failed — dynamic fallback, bundled runtimes below"
+            CGO_ENABLED=1 go build -buildmode=c-shared -o xbox_checker.dll .
+          fi
+          imports="$(objdump -p xbox_checker.dll | awk '/DLL Name/{print $3}')"
+          echo "DLL imports:"
+          echo "$imports"
+          # Belt and braces: if the DLL still imports a MinGW runtime,
+          # ship it inside the bundle so LoadLibrary can resolve it.
+          libdir="$(dirname "$(gcc -print-libgcc-file-name)")"
+          for f in libgcc_s_seh-1.dll libwinpthread-1.dll libstdc++-6.dll; do
+            if echo "$imports" | grep -qix "$f"; then
+              cp "$libdir/$f" bundle/
+              echo "bundled $f"
+            fi
+          done
           mv xbox_checker.dll dist-test/
           rm -f xbox_checker.h
           cp dist-test/xbox_checker.dll bundle/

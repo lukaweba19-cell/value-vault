@@ -29,50 +29,73 @@ const (
 
 func main() {
 	server.HideConsole()
+	bootLogf("launch app=%s", r2store.AppVersion)
 	r2store.AfterUpdateCleanup()
 	go core.PullQuotaFromCloud()
 
-	// Single instance: if the API already answers, another copy of the
-	// program is running — never serve twice.
+	// Another process may already answer 2718 — an earlier copy of this
+	// exe, or an old client that has not updated yet. The Flutter UI talks
+	// to its engine in-process over dart:ffi, so the port is irrelevant to
+	// it: keep going. The old behaviour (exit silently when the port was
+	// busy) is what made launches look like they "instantly closed".
 	if tcpUp(apiAddr) {
-		return
+		bootLogf("%s already served by another copy — continuing", apiAddr)
 	}
 
-	mux := newAPIMux()
-
+	// Listeners are best-effort: when the port is taken by someone else the
+	// FFI-backed UI still works without them.
 	go func() {
-		_ = stdhttp.ListenAndServe(apiAddr, mux)
+		_ = stdhttp.ListenAndServe(apiAddr, newAPIMux())
 	}()
-
-	viewerMux := newViewerMux()
-
 	go func() {
-		_ = stdhttp.ListenAndServe(viewerAddr, viewerMux)
+		_ = stdhttp.ListenAndServe(viewerAddr, newViewerMux())
 	}()
 
 	// Old single-exe installs restart here after their self-update: pull the
 	// native client files from R2 once if they are missing beside this exe.
 	ensureClientBundle()
 
+	// Never fall through to a headless process with no window: if the UI
+	// files are not complete after bootstrap, say so visibly and exit so
+	// the port is not squatted without an interface behind it.
+	if !clientFilesReady() {
+		bootLogf("client files incomplete after bootstrap — aborting")
+		server.ShowErrorDialog("SOLO Checker",
+			"The SOLO Checker window files could not be prepared:\n\n"+
+				"- "+nativeUIExe+"\n- xbox_checker.dll\n- data\\flutter_assets\n\n"+
+				"Re-download the release bundle, then check solo-launch.log next to the exe for details.")
+		return
+	}
+
 	time.Sleep(200 * time.Millisecond)
 
-	// Bootstrap: the Flutter client is the only UI. Launch it when it is
-	// bundled next to this exe and follow its lifetime; otherwise keep
-	// serving the API so a client can connect later.
-	if exe := nativeUIPath(); exe != "" {
-		cmd := exec.Command(exe)
-		cmd.Dir = filepath.Dir(exe)
-		if err := cmd.Start(); err == nil {
-			_, _ = cmd.Process.Wait()
-			// If the native window we started handed off to another instance
-			// (single-instance lock), keep serving until that one closes.
-			for tcpUp(nativeUILock) {
-				time.Sleep(2 * time.Second)
-			}
-			return
-		}
+	// Bootstrap: the Flutter client is the only UI. Launch it and follow
+	// its lifetime; every failure path reports visibly instead of exiting
+	// silently.
+	exe := nativeUIPath()
+	if exe == "" {
+		bootLogf("clientFilesReady passed but %s vanished — aborting", nativeUIExe)
+		server.ShowErrorDialog("SOLO Checker", nativeUIExe+" is missing from the install folder.")
+		return
 	}
-	select {}
+	cmd := exec.Command(exe)
+	cmd.Dir = filepath.Dir(exe)
+	if err := cmd.Start(); err != nil {
+		bootLogf("start %s: %v", exe, err)
+		server.ShowErrorDialog("SOLO Checker",
+			"Could not start the SOLO Checker window:\n\n"+err.Error())
+		return
+	}
+	bootLogf("started %s pid=%d", exe, cmd.Process.Pid)
+	_, _ = cmd.Process.Wait()
+	if cmd.ProcessState != nil {
+		bootLogf("window exited with code %d", cmd.ProcessState.ExitCode())
+	}
+	// If the native window we started handed off to another instance
+	// (single-instance lock), keep serving until that one closes.
+	for tcpUp(nativeUILock) {
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // nativeUIPath returns the path of the bundled native client, if present.

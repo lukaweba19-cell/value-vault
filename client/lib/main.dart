@@ -1,6 +1,9 @@
 // SOLO Checker — Flutter desktop client entrypoint.
 // One process: the window is Flutter, the engine is the Go shared library
 // loaded in-process via dart:ffi. No sockets, no embedded web content.
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import 'api.dart';
@@ -8,21 +11,37 @@ import 'boot.dart';
 import 'shell.dart';
 import 'theme.dart';
 
-Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+void main() {
+  runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
 
-  // Single instance: the OS mutex refuses a second window.
-  if (!acquireSingleInstance()) return;
-
-  // Load the Go engine (xbox_checker.dll sits next to this exe).
-  final err = await FfiBackend.start();
-
-  runApp(SoloApp(bootError: err));
+    // Single instance: the OS mutex refuses a second window. The old code
+    // returned from main() without ever calling runApp, which left a hidden
+    // process holding the mutex and NO window at all — every later launch
+    // then "did nothing". Every path now shows a window.
+    final gotIt = acquireSingleInstance();
+    String? err;
+    if (gotIt) {
+      try {
+        // Load the Go engine (xbox_checker.dll sits next to this exe).
+        err = await FfiBackend.start();
+      } catch (e) {
+        err = 'Failed to start engine: $e';
+      }
+    }
+    runApp(SoloApp(bootError: err, alreadyRunning: !gotIt));
+  }, (e, st) {
+    // A late async error must never take the window down silently.
+    try {
+      runApp(SoloApp(bootError: 'Unexpected error: $e'));
+    } catch (_) {/* engine already tore the app down */}
+  });
 }
 
 class SoloApp extends StatelessWidget {
   final String? bootError;
-  const SoloApp({super.key, this.bootError});
+  final bool alreadyRunning;
+  const SoloApp({super.key, this.bootError, this.alreadyRunning = false});
 
   @override
   Widget build(BuildContext context) {
@@ -30,7 +49,53 @@ class SoloApp extends StatelessWidget {
       title: 'SOLO Checker',
       debugShowCheckedModeBanner: false,
       theme: buildTheme(),
-      home: BootGate(bootError: bootError),
+      home: alreadyRunning
+          ? const AlreadyRunningScreen()
+          : BootGate(bootError: bootError),
+    );
+  }
+}
+
+/// Shown when a second instance starts while one is already running.
+/// Closes itself immediately so nothing lingers in the background.
+class AlreadyRunningScreen extends StatefulWidget {
+  const AlreadyRunningScreen({super.key});
+
+  @override
+  State<AlreadyRunningScreen> createState() => _AlreadyRunningScreenState();
+}
+
+class _AlreadyRunningScreenState extends State<AlreadyRunningScreen> {
+  @override
+  void initState() {
+    super.initState();
+    Timer(const Duration(milliseconds: 1600), () {
+      exit(0);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: appBackdrop(
+        Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: const [
+              SizedBox(
+                width: 42,
+                height: 42,
+                child: CircularProgressIndicator(strokeWidth: 3, color: T.acc),
+              ),
+              SizedBox(height: 18),
+              Text(
+                'SOLO Checker is already running…',
+                style: TextStyle(fontSize: 13.5, color: T.mut),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -20,46 +19,57 @@ import (
 )
 
 // ensureClientBundle materializes the Flutter client next to this exe when
-// either required file is missing. It is a no-op on healthy installs (both
-// files exist → no network traffic at all).
+// any required piece is missing (launcher exe, engine DLL or the Flutter
+// asset bundle). It is a no-op on healthy installs (everything present → no
+// network traffic at all).
 func ensureClientBundle() {
 	dir := exeDir()
 	if dir == "" {
+		bootLogf("client bootstrap: cannot resolve exe dir")
 		return
 	}
-	if !missingAny(dir, nativeUIExe, keys.DllKey) {
+	if clientFilesReady() {
 		return
 	}
-
+	bootLogf("client bootstrap: files missing beside exe — fetching bundle from R2")
 	m, err := r2store.FetchUpdateManifest()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "client bootstrap: manifest: %v\n", err)
+		bootLogf("client bootstrap: manifest: %v", err)
 		return
 	}
 	raw, err := r2store.Get(m.Bundle)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "client bootstrap: bundle: %v\n", err)
+		bootLogf("client bootstrap: bundle: %v", err)
 		return
 	}
 	if m.BundleSHA != "" {
 		sum := sha256.Sum256(raw)
 		if got := hex.EncodeToString(sum[:]); got != m.BundleSHA {
-			fmt.Fprintf(os.Stderr, "client bootstrap: bundle sha mismatch (got %s)\n", got)
+			bootLogf("client bootstrap: bundle sha mismatch (got %s)", got)
 			return
 		}
 	}
 	if err := extractBundle(raw, dir); err != nil {
-		fmt.Fprintf(os.Stderr, "client bootstrap: extract: %v\n", err)
+		bootLogf("client bootstrap: extract: %v", err)
 	}
 }
 
-func missingAny(dir string, names ...string) bool {
-	for _, n := range names {
+// clientFilesReady reports whether the Flutter client is complete next to
+// this exe: the launcher, the engine DLL and the Flutter asset bundle.
+func clientFilesReady() bool {
+	dir := exeDir()
+	if dir == "" {
+		return false
+	}
+	for _, n := range []string{nativeUIExe, keys.DllKey} {
 		if _, err := os.Stat(filepath.Join(dir, n)); err != nil {
-			return true
+			return false
 		}
 	}
-	return false
+	if _, err := os.Stat(filepath.Join(dir, "data", "flutter_assets")); err != nil {
+		return false
+	}
+	return true
 }
 
 func exeDir() string {
@@ -102,12 +112,12 @@ func extractBundle(raw []byte, dir string) error {
 			continue
 		}
 		if err := writeZipFile(f, dst); err != nil {
-			fmt.Fprintf(os.Stderr, "client bootstrap: %s: %v\n", name, err)
+			bootLogf("client bootstrap: %s: %v", name, err)
 			continue
 		}
 		extracted++
 	}
-	fmt.Fprintf(os.Stderr, "client bootstrap: extracted %d files\n", extracted)
+	bootLogf("client bootstrap: extracted %d files", extracted)
 	return nil
 }
 
