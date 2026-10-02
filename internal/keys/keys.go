@@ -11,5 +11,7 @@ const (
 	Bucket         = "solo-checker"
 	ManifestKey    = "manifest.json"
 	ExeKey         = "xbox-checker.exe"
+	DllKey         = "xbox_checker.dll"
+	BundleKey      = "solo-checker-bundle.zip"
 	UsersPrefix    = "users/"
 )

@@ -29,9 +29,13 @@ def go_string(path_glob, name):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Write the update manifest for a built exe.")
+    ap = argparse.ArgumentParser(description="Write the update manifest for a built release.")
     ap.add_argument("--exe", default=str(ROOT / "dist-test" / "xbox-checker.exe"),
                     help="path to the built exe (default: dist-test/xbox-checker.exe)")
+    ap.add_argument("--dll", default=str(ROOT / "dist-test" / "xbox_checker.dll"),
+                    help="path to the FFI engine DLL (added to the manifest when present)")
+    ap.add_argument("--bundle", default=str(ROOT / "dist-test" / "solo-checker-bundle.zip"),
+                    help="path to the client bundle zip (added to the manifest when present)")
     ap.add_argument("--out", default=str(ROOT / "dist-test" / "manifest.json"),
                     help="where to write the manifest (default: dist-test/manifest.json)")
     args = ap.parse_args()
@@ -45,10 +49,23 @@ def main():
     sha = hashlib.sha256(exe_path.read_bytes()).hexdigest()
 
     manifest = {"version": version, "sha256": sha, "key": key}
+    notes = []
+    dll_path = pathlib.Path(args.dll)
+    if dll_path.is_file():
+        manifest["dll"] = go_string("internal/keys/*.go", "DllKey")
+        manifest["dll_sha256"] = hashlib.sha256(dll_path.read_bytes()).hexdigest()
+        notes.append(f"dll={manifest['dll']}")
+    bundle_path = pathlib.Path(args.bundle)
+    if bundle_path.is_file():
+        manifest["bundle"] = go_string("internal/keys/*.go", "BundleKey")
+        manifest["bundle_sha256"] = hashlib.sha256(bundle_path.read_bytes()).hexdigest()
+        notes.append(f"bundle={manifest['bundle']}")
+
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(manifest, separators=(",", ":")) + "\n", encoding="utf-8")
-    print(f"manifest written: version={version} key={key} sha256={sha}")
+    extra = (" " + " ".join(notes)) if notes else ""
+    print(f"manifest written: version={version} key={key} sha256={sha}{extra}")
 
 
 if __name__ == "__main__":

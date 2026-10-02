@@ -97,6 +97,13 @@ jobs:
           test -f bundle/xbox_checker.dll
           ls -la dist-test/xbox_checker.dll bundle/xbox_checker.dll
 
+      - name: Pack client bundle zip for R2
+        shell: bash
+        run: |
+          ( cd bundle && 7z a -tzip ../dist-test/solo-checker-bundle.zip . )
+          ls -la dist-test/solo-checker-bundle.zip
+          python3 -c "import zipfile; print(len(zipfile.ZipFile('dist-test/solo-checker-bundle.zip').infolist()), 'entries')" 2>/dev/null || true
+
       - name: Upload release bundle
         uses: actions/upload-artifact@v4
         with:
@@ -111,6 +118,7 @@ jobs:
           path: |
             dist-test/xbox-checker.exe
             dist-test/xbox_checker.dll
+            dist-test/solo-checker-bundle.zip
           if-no-files-found: error
 
   publish:

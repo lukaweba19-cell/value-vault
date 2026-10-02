@@ -119,6 +119,13 @@ type UpdateManifest struct {
 	Key     string `json:"key"`
 	Notes   string `json:"notes"`
 	URL     string `json:"url"`
+	// Optional sidecar objects for installs that only carry the exe: the
+	// native client DLL and the full Flutter bundle, fetched once on first
+	// boot after a self-update (bootstrap.go). Older clients ignore these.
+	DLL       string `json:"dll,omitempty"`
+	DLLSHA    string `json:"dll_sha256,omitempty"`
+	Bundle    string `json:"bundle,omitempty"`
+	BundleSHA string `json:"bundle_sha256,omitempty"`
 }
 
 func FetchUpdateManifest() (UpdateManifest, error) {
@@ -132,8 +139,16 @@ func FetchUpdateManifest() (UpdateManifest, error) {
 	}
 	m.Version = strings.TrimSpace(m.Version)
 	m.SHA256 = strings.ToLower(strings.TrimSpace(m.SHA256))
+	m.DLLSHA = strings.ToLower(strings.TrimSpace(m.DLLSHA))
+	m.BundleSHA = strings.ToLower(strings.TrimSpace(m.BundleSHA))
 	if m.Key == "" {
 		m.Key = keys.ExeKey
+	}
+	if m.DLL == "" {
+		m.DLL = keys.DllKey
+	}
+	if m.Bundle == "" {
+		m.Bundle = keys.BundleKey
 	}
 	return m, nil
 }

@@ -50,6 +50,10 @@ func main() {
 		_ = stdhttp.ListenAndServe(viewerAddr, viewerMux)
 	}()
 
+	// Old single-exe installs restart here after their self-update: pull the
+	// native client files from R2 once if they are missing beside this exe.
+	ensureClientBundle()
+
 	time.Sleep(200 * time.Millisecond)
 
 	// Bootstrap: the Flutter client is the only UI. Launch it when it is
