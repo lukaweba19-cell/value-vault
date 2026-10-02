@@ -1,12 +1,13 @@
 // Command xbox-checker is the SOLO Checker desktop app. This file is only
-// wiring: CLI flags, HTTP routes and window bootstrap live here; all logic
-// lives under internal/*.
+// wiring: HTTP routes and window bootstrap live here; all logic lives under
+// internal/*.
 package main
 
 import (
-	"fmt"
+	"net"
 	"os"
-	"strings"
+	"os/exec"
+	"path/filepath"
 	"time"
 
 	stdhttp "net/http"
@@ -19,7 +20,16 @@ import (
 	"xbox-checker/internal/r2store"
 	"xbox-checker/internal/ui"
 	"xbox-checker/internal/viewer"
-	"xbox-checker/internal/xbox"
+)
+
+// nativeUIExe is the Flutter client that sits next to this executable in a
+// native install. nativeUILock is the localhost port the native client holds
+// for as long as its window is alive; the backend follows that lifetime.
+const (
+	apiAddr      = "127.0.0.1:2718"
+	viewerAddr   = "127.0.0.1:2719"
+	nativeUILock = "127.0.0.1:27180"
+	nativeUIExe  = "solo_checker.exe"
 )
 
 func main() {
@@ -27,72 +37,9 @@ func main() {
 	r2store.AfterUpdateCleanup()
 	go core.PullQuotaFromCloud()
 
-	if len(os.Args) > 1 && os.Args[1] == "--revoke-tbird" {
-		combo := os.Getenv("MAILTEST_COMBO")
-		if combo == "" && len(os.Args) > 2 {
-			combo = os.Args[2]
-		}
-		proxyStr := os.Getenv("MAILTEST_PROXY")
-		if proxyStr == "" && len(os.Args) > 3 {
-			proxyStr = os.Args[3]
-		}
-		email, pass, _ := strings.Cut(combo, ":")
-		if err := mail.RevokeThunderbirdConsent(strings.TrimSpace(email), strings.TrimSpace(pass), strings.TrimSpace(proxyStr)); err != nil {
-			fmt.Println("REVOKE_ERR", err)
-			os.Exit(1)
-		}
-		return
-	}
-	if len(os.Args) > 1 && os.Args[1] == "--mailtest" {
-		combo := os.Getenv("MAILTEST_COMBO")
-		if combo == "" && len(os.Args) > 2 {
-			combo = os.Args[2]
-		}
-		email, pass, _ := strings.Cut(combo, ":")
-		email, pass = strings.TrimSpace(email), strings.TrimSpace(pass)
-		fmt.Println("mailtest login", email)
-		msgs, err := mail.ListMailOnce(email, pass, "", 0, 20, "", "inbox")
-		if err != nil {
-			fmt.Println("MAIL_ERR", err)
-		} else {
-			fmt.Println("MAIL_OK", len(msgs))
-			for i, m := range msgs {
-				if i >= 8 {
-					break
-				}
-				fmt.Printf("  - %s | from=%s | preview=%d chars\n", m.Subject, m.From, len(m.Preview))
-			}
-		}
-		kind := xbox.ClassifyAccountType(email, "")
-		fmt.Println("ACCOUNT_TYPE", kind)
-		return
-	}
-	if len(os.Args) > 1 && os.Args[1] == "--folders-test" {
-		combo := os.Getenv("MAILTEST_COMBO")
-		if combo == "" && len(os.Args) > 2 {
-			combo = os.Args[2]
-		}
-		email, pass, _ := strings.Cut(combo, ":")
-		email, pass = strings.TrimSpace(email), strings.TrimSpace(pass)
-		fmt.Println("folders-test", email)
-		for _, folder := range []string{"inbox", "sent", "spam", "deleted"} {
-			msgs, err := mail.ListMailOnce(email, pass, "", 0, 15, "kind:email", folder)
-			if err != nil {
-				fmt.Printf("[%s] ERR %v\n", folder, err)
-				continue
-			}
-			fmt.Printf("[%s] count=%d folderName=%s\n", folder, len(msgs), mail.FolderName(folder))
-			for i, m := range msgs {
-				if i >= 5 {
-					break
-				}
-				fmt.Printf("  - %s | from=%s\n", m.Subject, m.From)
-			}
-		}
-		return
-	}
-	if len(os.Args) > 1 && os.Args[1] == "--viewer" {
-		_ = gui.OpenAppWindowTitled("Valid Viewer", "http://127.0.0.1:2719/", 1180, 820)
+	// Single instance: if the API already answers, another copy of the
+	// program is running — never serve twice.
+	if tcpUp(apiAddr) {
 		return
 	}
 
@@ -129,9 +76,8 @@ func main() {
 	mux.HandleFunc("/api/update/apply", r2store.HandleApply)
 	mux.HandleFunc("/ui/", ui.Asset)
 
-	addr := "127.0.0.1:2718"
 	go func() {
-		_ = stdhttp.ListenAndServe(addr, mux)
+		_ = stdhttp.ListenAndServe(apiAddr, mux)
 	}()
 
 	viewerMux := stdhttp.NewServeMux()
@@ -154,13 +100,52 @@ func main() {
 	viewerMux.HandleFunc("/ui/", ui.Asset)
 
 	go func() {
-		_ = stdhttp.ListenAndServe("127.0.0.1:2719", viewerMux)
+		_ = stdhttp.ListenAndServe(viewerAddr, viewerMux)
 	}()
 
 	time.Sleep(200 * time.Millisecond)
-	if gui.OpenAppWindow("http://" + addr) {
+
+	// Window bootstrap: the native client is the real UI when it is bundled
+	// next to this exe — launch it and follow its lifetime. Without it, the
+	// built-in webview window (or the system browser) is the UI.
+	if exe := nativeUIPath(); exe != "" {
+		cmd := exec.Command(exe)
+		cmd.Dir = filepath.Dir(exe)
+		if err := cmd.Start(); err == nil {
+			_, _ = cmd.Process.Wait()
+			// If the native window we started handed off to another instance
+			// (single-instance lock), keep serving until that one closes.
+			for tcpUp(nativeUILock) {
+				time.Sleep(2 * time.Second)
+			}
+			return
+		}
+	}
+	if gui.OpenAppWindow("http://" + apiAddr) {
 		return
 	}
-	gui.OpenBrowser("http://" + addr)
+	gui.OpenBrowser("http://" + apiAddr)
 	select {}
+}
+
+// nativeUIPath returns the path of the bundled native client, if present.
+func nativeUIPath() string {
+	self, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	p := filepath.Join(filepath.Dir(self), nativeUIExe)
+	if _, err := os.Stat(p); err != nil {
+		return ""
+	}
+	return p
+}
+
+func tcpUp(addr string) bool {
+	c, err := net.DialTimeout("tcp", addr, 400*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = c.Close()
+	return true
 }

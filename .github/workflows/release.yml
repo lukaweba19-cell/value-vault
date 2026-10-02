@@ -1,0 +1,132 @@
+name: Release
+
+# Builds the Windows release on every push to main:
+#   1. build job  (windows-latest): Go checks + xbox-checker.exe, Flutter
+#      checks + solo_checker.exe, assembles the full release bundle.
+#   2. publish job (ubuntu-latest): writes dist-test/manifest.json exactly
+#      like tools/manifest.py does locally, commits dist-test back to main
+#      ([skip ci] prevents loops), then pushes exe + manifest to R2 via
+#      tools/r2push.py (same gates: version == AppVersion, manifest sha ==
+#      exe sha, exe uploaded before manifest, read-back verification).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Go checks
+        shell: bash
+        run: |
+          export CGO_ENABLED=0
+          fmt_out="$(gofmt -l .)"
+          if [ -n "$fmt_out" ]; then
+            echo "gofmt needed on:" >&2
+            echo "$fmt_out" >&2
+            exit 1
+          fi
+          go vet ./...
+          go test ./...
+
+      - name: Build backend exe
+        shell: bash
+        run: |
+          export CGO_ENABLED=0
+          go build -trimpath -ldflags "-s -w" -o dist-test/xbox-checker.exe .
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.6'
+          channel: stable
+          cache: true
+
+      - name: Flutter checks
+        shell: bash
+        working-directory: client
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+
+      - name: Build Flutter Windows client
+        shell: bash
+        working-directory: client
+        run: flutter build windows --release
+
+      - name: Assemble release bundle
+        shell: bash
+        run: |
+          mkdir -p bundle
+          cp -a client/build/windows/x64/runner/Release/. bundle/
+          cp dist-test/xbox-checker.exe bundle/
+          test -f bundle/solo_checker.exe
+          ls -la bundle
+
+      - name: Upload release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: solo-checker-windows
+          path: bundle/
+          if-no-files-found: error
+
+      - name: Upload backend exe for publishing
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-exe
+          path: dist-test/xbox-checker.exe
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download backend exe
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-exe
+          path: dist-test
+
+      - name: Write update manifest
+        run: python3 tools/manifest.py
+
+      - name: Commit refreshed build to main
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist-test/xbox-checker.exe dist-test/manifest.json
+          if git diff --cached --quiet; then
+            echo "dist-test is already up to date"
+          else
+            version="$(python3 -c 'import json;print(json.load(open("dist-test/manifest.json"))["version"])')"
+            git commit -m "Release ${version}: rebuilt Windows exe + manifest [skip ci]"
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+
+      - name: Push build + manifest to R2
+        run: python3 tools/r2push.py

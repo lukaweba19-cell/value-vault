@@ -511,15 +511,15 @@ func WindowsOpenFile(title string) string {
 
 func HandleOpenViewer(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	u := "http://127.0.0.1:2719/"
-	exe, err := os.Executable()
-	if err != nil {
-		exe = os.Args[0]
-	}
-	cmd := exec.Command(exe, "--viewer")
-	cmd.Dir, _ = os.Getwd()
-	err = cmd.Start()
+	// Own window, opened in-process: its message loop runs on this goroutine
+	// and closes by itself when the user is done with it.
+	go func() {
+		if !OpenAppWindowTitled("Valid Viewer", u, 1180, 820) {
+			openBrowserPortable(u)
+		}
+	}()
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"ok": err == nil, "url": u})
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "url": u})
 }
 
 func HandleOpenLink(w stdhttp.ResponseWriter, r *stdhttp.Request) {
