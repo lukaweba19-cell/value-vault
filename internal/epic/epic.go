@@ -348,7 +348,6 @@ type specialDef struct {
 
 func specialCatalog() []specialDef {
 	return []specialDef{
-		
 		{Name: "OG Renegade", ID: "AthenaCharacter:cid_028_athena_commando_f", Variants: []specialVariant{{"Material", "Mat3"}}},
 		{Name: "OG Aerial", ID: "AthenaCharacter:cid_017_athena_commando_m", Variants: []specialVariant{{"Parts", "Stage2"}}},
 		{Name: "OG Skull", ID: "AthenaCharacter:cid_030_athena_commando_m_halloween", Variants: []specialVariant{{"ClothingColor", "Mat3"}}},
@@ -832,7 +831,6 @@ func specialCatalog() []specialDef {
 		{Name: "Ride The Pony", ID: "AthenaDance:eid_ridethepony_athena"},
 	}
 }
-
 
 func itemHasVariant(attrs map[string]interface{}, channel, stage string) bool {
 	if channel == "" || stage == "" {
