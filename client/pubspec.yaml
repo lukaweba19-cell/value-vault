@@ -38,6 +38,12 @@ dependencies:
   flutter_html: ^3.0.0
   ffi: ^2.2.0
 
+dependency_overrides:
+  # flutter_html 3.0.0 calls the internal qs.matches() helper, which was
+  # removed in html 0.15.7 — pin the last working version or the Windows
+  # kernel compile fails ("Method not found: 'matches'").
+  html: 0.15.6
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
