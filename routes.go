@@ -14,9 +14,19 @@ import (
 )
 
 // newFFIMux is the single route table the Flutter app calls in-process over
-// dart:ffi — the union of both listeners, minus the self-update endpoints
-// (an in-process UI must never replace its own host executable).
+// dart:ffi — the union of both listeners. Update check is read-only and
+// update apply is the staged variant (downloads the new launcher and hands
+// the swap to it); the in-process UI never replaces its own host executable.
 func newFFIMux() *stdhttp.ServeMux {
+	mux := newBaseMux()
+	mux.HandleFunc("/api/update/check", r2store.HandleCheck)
+	mux.HandleFunc("/api/update/apply", r2store.HandleApplyPending)
+	return mux
+}
+
+// newBaseMux is every shared route, without the update endpoints (each
+// listener registers its own apply flavour).
+func newBaseMux() *stdhttp.ServeMux {
 	mux := stdhttp.NewServeMux()
 	mux.HandleFunc("/", server.HandleRoot)
 	mux.HandleFunc("/api/state", server.HandleState)
@@ -55,7 +65,7 @@ func newFFIMux() *stdhttp.ServeMux {
 // plus the R2 self-update endpoints (only meaningful for the standalone exe,
 // which replaces itself via os.Executable()).
 func newAPIMux() *stdhttp.ServeMux {
-	mux := newFFIMux()
+	mux := newBaseMux()
 	mux.HandleFunc("/api/update/check", r2store.HandleCheck)
 	mux.HandleFunc("/api/update/apply", r2store.HandleApply)
 	return mux

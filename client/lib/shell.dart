@@ -1,6 +1,7 @@
 // App shell: topbar, sidebar navigation, statusbar, view state machine and
 // the update prompt — the Flutter port of dash/main.mjs.
 import 'dart:async';
+import 'dart:io' show exit;
 
 import 'package:flutter/material.dart';
 
@@ -763,6 +764,10 @@ class _UpdateCheckState extends State<UpdateCheck> {
       });
     } else {
       setState(() => _err = 'Restarting…');
+      refresh();
+      // The launcher swaps itself for the downloaded exe and restarts the
+      // app once this window exits — get out of its way.
+      Future.delayed(const Duration(milliseconds: 500), () => exit(0));
     }
     refresh();
   }

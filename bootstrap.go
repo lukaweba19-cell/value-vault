@@ -20,18 +20,26 @@ import (
 
 // ensureClientBundle materializes the Flutter client next to this exe when
 // any required piece is missing (launcher exe, engine DLL or the Flutter
-// asset bundle). It is a no-op on healthy installs (everything present → no
-// network traffic at all).
+// asset bundle) or when the extracted client is from an older release
+// (data/client.version stamp differs from AppVersion — an update must
+// deliver the new DLL and assets, not just the new launcher). It is a
+// no-op on healthy, current installs (everything present → no network
+// traffic at all).
 func ensureClientBundle() {
 	dir := exeDir()
 	if dir == "" {
 		bootLogf("client bootstrap: cannot resolve exe dir")
 		return
 	}
-	if clientFilesReady() {
+	if clientFilesReady() && clientStampCurrent(dir) {
 		return
 	}
-	bootLogf("client bootstrap: files missing beside exe — fetching bundle from R2")
+	if clientFilesReady() {
+		bootLogf("client bootstrap: client is %q, want %s — fetching bundle from R2",
+			clientStamp(dir), r2store.AppVersion)
+	} else {
+		bootLogf("client bootstrap: files missing beside exe — fetching bundle from R2")
+	}
 	m, err := r2store.FetchUpdateManifest()
 	if err != nil {
 		bootLogf("client bootstrap: manifest: %v", err)
@@ -51,7 +59,31 @@ func ensureClientBundle() {
 	}
 	if err := extractBundle(raw, dir); err != nil {
 		bootLogf("client bootstrap: extract: %v", err)
+		return
 	}
+	// Stamp the extracted client so the next release refreshes it again.
+	if err := os.WriteFile(clientStampPath(dir), []byte(m.Version), 0o644); err != nil {
+		bootLogf("client bootstrap: stamp: %v", err)
+	}
+}
+
+// clientStampPath is the version marker written after a successful client
+// extraction, kept inside data/ so it ships beside flutter_assets.
+func clientStampPath(dir string) string {
+	return filepath.Join(dir, "data", "client.version")
+}
+
+func clientStamp(dir string) string {
+	b, err := os.ReadFile(clientStampPath(dir))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func clientStampCurrent(dir string) bool {
+	s := clientStamp(dir)
+	return s != "" && s == r2store.AppVersion
 }
 
 // clientFilesReady reports whether the Flutter client is complete next to

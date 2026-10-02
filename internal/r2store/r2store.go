@@ -21,7 +21,7 @@ import (
 	"xbox-checker/internal/keys"
 )
 
-const AppVersion = "1.0.14"
+const AppVersion = "1.0.15"
 
 func SignGet(key string) (*stdhttp.Request, error) {
 	key = strings.TrimPrefix(key, "/")
@@ -256,6 +256,124 @@ func HandleApply(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		time.Sleep(600 * time.Millisecond)
 		os.Exit(0)
 	}()
+}
+
+// Staged-update files beside the launcher: HandleApplyPending writes them,
+// FinishPendingUpdate consumes them once the Flutter window has exited.
+const (
+	pendingNewSuffix = ".new"
+	pendingMarker    = "solo-update.pending"
+)
+
+// launcherPath resolves the launcher executable (the file the standalone
+// flow replaces). Inside the Flutter host process (solo_checker.exe, which
+// loads this code as a DLL) os.Executable() points at the client, so the
+// launcher sits beside it.
+func launcherPath() (string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	if strings.EqualFold(filepath.Base(self), keys.ExeKey) {
+		return self, nil
+	}
+	p := filepath.Join(filepath.Dir(self), keys.ExeKey)
+	if _, err := os.Stat(p); err != nil {
+		return "", fmt.Errorf("%s not found beside the app", keys.ExeKey)
+	}
+	return p, nil
+}
+
+// HandleApplyPending is the in-process (dart:ffi) variant of HandleApply.
+// The DLL's host process must never replace its own running executable, so
+// this only downloads the new launcher next to the current one and drops a
+// marker file; the launcher swaps itself (FinishPendingUpdate) after the
+// Flutter window exits, then restarts and bootstraps the new client files.
+func HandleApplyPending(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	fail := func(msg string) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": msg})
+	}
+	m, err := FetchUpdateManifest()
+	if err != nil {
+		fail(err.Error())
+		return
+	}
+	if !VersionNewer(m.Version, AppVersion) {
+		fail("already on " + AppVersion)
+		return
+	}
+	launcher, err := launcherPath()
+	if err != nil {
+		fail(err.Error())
+		return
+	}
+	raw, err := Get(m.Key)
+	if err != nil {
+		fail(err.Error())
+		return
+	}
+	sum := sha256.Sum256(raw)
+	got := hex.EncodeToString(sum[:])
+	if m.SHA256 != "" && got != m.SHA256 {
+		fail("sha256 mismatch got " + got)
+		return
+	}
+	newExe := launcher + pendingNewSuffix
+	if err := os.WriteFile(newExe, raw, 0755); err != nil {
+		fail(err.Error())
+		return
+	}
+	marker := filepath.Join(filepath.Dir(launcher), pendingMarker)
+	if err := os.WriteFile(marker, []byte(m.Version), 0644); err != nil {
+		_ = os.Remove(newExe)
+		fail(err.Error())
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "restarting": true, "version": m.Version})
+}
+
+// FinishPendingUpdate is called by the launcher after the Flutter window
+// exits. When a staged update marker is present it swaps the launcher for
+// the downloaded one and starts it detached (the helper script waits for
+// this process to exit first). Returns a log message when work was done,
+// or "" when there is nothing to apply.
+func FinishPendingUpdate() string {
+	self, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Dir(self)
+	marker := filepath.Join(dir, pendingMarker)
+	if _, err := os.Stat(marker); err != nil {
+		return ""
+	}
+	if !strings.EqualFold(filepath.Base(self), keys.ExeKey) {
+		return "" // leave the marker for the real launcher
+	}
+	newExe := self + pendingNewSuffix
+	raw, err := os.ReadFile(newExe)
+	if err != nil {
+		_ = os.Remove(marker)
+		return "staged update missing: " + err.Error()
+	}
+	old := self + ".old"
+	_ = os.Remove(old)
+	if err := os.Rename(self, old); err != nil {
+		_ = os.Remove(marker)
+		return "could not move running exe aside: " + err.Error()
+	}
+	if err := os.WriteFile(self, raw, 0755); err != nil {
+		_ = os.Rename(old, self)
+		_ = os.Remove(marker)
+		return "could not write new exe: " + err.Error()
+	}
+	_ = os.Remove(newExe)
+	_ = os.Remove(marker)
+	if err := startDetached(self); err != nil {
+		return "update written but restart failed (start it manually): " + err.Error()
+	}
+	return "launcher swapped; restarting"
 }
 
 func startDetached(exe string) error {

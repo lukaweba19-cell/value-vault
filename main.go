@@ -65,6 +65,12 @@ func main() {
 	if cmd.ProcessState != nil {
 		bootLogf("window exited with code %d", cmd.ProcessState.ExitCode())
 	}
+
+	// The update prompt inside the window stages the new launcher and exits;
+	// swap it in now that the window is gone, then restart via the helper.
+	if msg := r2store.FinishPendingUpdate(); msg != "" {
+		bootLogf("update: %s", msg)
+	}
 }
 
 // nativeUIPath returns the path of the bundled native client, if present.

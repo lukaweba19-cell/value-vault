@@ -29,6 +29,16 @@ void main() {
     expect(r.text, contains('SOLO Checker backend running'));
   });
 
+  test('update check route is registered on the FFI mux', skip: skip,
+      () async {
+    // The launch-time update prompt depends on this route existing in-process.
+    // A missing route answers 404; the handler itself always answers 200 JSON.
+    final r = await Api.get('/api/update/check');
+    expect(r.status, 200, reason: r.text);
+    expect(r.data is Map, isTrue, reason: r.text);
+    expect(r.data['local'], isNotEmpty);
+  });
+
   test('POST body reaches the handler', skip: skip, () async {
     // pause on a non-running engine answers JSON {ok:false,error:not running}
     final r = await Api.postEmpty('/api/pause');
