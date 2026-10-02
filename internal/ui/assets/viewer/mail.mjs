@@ -76,7 +76,7 @@ export function Avatar({ from, big }) {
 const FOLDERS = [["inbox", "Inbox"], ["sent", "Sent"], ["spam", "Spam"], ["deleted", "Deleted"]];
 
 export function MailViewer({ account, onClose }) {
-  const [stage, setStage] = useState("ask"); // ask | px | connect | error | main
+  const [stage, setStage] = useState("checking"); // checking | saved | ask | px | connect | error | main
   // proxy choice ({proxy_mode, proxy, proxy_urls} or null) lives on R.current
   // (below), NOT in state: the original read window._mailProxy fresh at call
   // time, so the load issued right after picking proxies must see it too.
@@ -115,6 +115,9 @@ export function MailViewer({ account, onClose }) {
   // refs mirror the state the async mail flows depend on (the original code
   // read these straight off window.* globals, always fresh).
   const R = useRef({ proxy: null });
+  // openSeq guards the opening flow: only the latest probe may change the
+  // stage (a stale timer from a previous open must not hijack the view).
+  const openSeq = useRef(0);
   const put = (patch) => {
     R.current = { ...R.current, ...patch };
     if ("mails" in patch) setMails(patch.mails);
@@ -158,22 +161,26 @@ export function MailViewer({ account, onClose }) {
     setConnStep(0); setConnProxy(""); setConnTries([]); setConnErr(""); setConnBusy(true);
   };
 
-  /* ---- opening flow: probe first, else ask about proxies ---- */
+  /* ---- opening flow: saved token first, else ask about proxies ---- */
   useEffect(() => {
     if (!account) return;
+    const seq = ++openSeq.current;
     reset();
-    setStage("ask");
+    setStage("checking");
     (async () => {
       try {
         const { data } = await apiJSON("/api/mail/probe", { email: account.email });
         if (data && data.ok) {
           put({ mails: data.messages || [], total: data.total || 0 });
           setMore(!!data.more || ((data.total || 0) > (data.messages || []).length));
-          setStage("main");
+          // Saved-token path: show the sign-in flourish briefly, then open.
+          setStage("saved");
+          setTimeout(() => { if (openSeq.current === seq) setStage("main"); }, 950);
           return;
         }
       } catch (e) {}
-      setStage("ask");
+      // No saved token (or it died): fall back to the proxy question.
+      if (openSeq.current === seq) setStage("ask");
     })();
   }, [account && account.email]);
 
@@ -456,8 +463,22 @@ export function MailViewer({ account, onClose }) {
         const i = STAGE_ORDER.indexOf(ev.stage);
         if (i > 0) state.step = i;
       } else if (ev.type === "try") {
-        state.proxy = ev.proxy || "";
-        state.tries.push(ev);
+        if (ev.start) {
+          // Beginning of a new attempt: reset the step list so its progress
+          // is visible, and show a live "trying…" row instead of a failure.
+          state.step = 0;
+          state.proxy = ev.proxy || "";
+          state.tries.push({ proxy: ev.proxy || "", stage: ev.stage, trying: true });
+        } else {
+          const last = state.tries.length ? state.tries[state.tries.length - 1] : null;
+          const row = { proxy: ev.proxy || "", stage: ev.stage, ok: !!ev.ok, err: ev.err || "" };
+          if (last && last.trying && last.proxy === row.proxy) {
+            last.trying = false; last.ok = row.ok; last.err = row.err; last.stage = row.stage;
+          } else {
+            state.tries.push(row);
+          }
+          state.proxy = row.proxy;
+        }
       } else if (ev.type === "done") {
         state.done = ev;
       }
@@ -653,6 +674,50 @@ export function MailViewer({ account, onClose }) {
           </div>
         </div>`}
 
+      ${stage === "checking" && html`
+        <div class="mail-wrap" style=${{ height: "auto", width: "min(420px, 100%)" }}>
+          <div class="mail-head">
+            <div><div class="muted">EMAIL VIEWER</div><b>Checking saved token…</b></div>
+            <button class="secondary" type="button" onClick=${onClose}>Close</button>
+          </div>
+          <div class="conn-body">
+            <div class="conn-orb">
+              <span class="conn-orb-core"></span>
+              <span class="conn-orb-ring"></span>
+              <span class="conn-orb-ring conn-orb-ring2"></span>
+            </div>
+            <div class="conn-what">Looking for a saved session</div>
+            <div class="conn-via">${email}</div>
+            <div class="conn-steps">
+              <div class="conn-step active"><span class="conn-dot"></span><span>Checking saved token</span></div>
+              <div class="conn-step"><span class="conn-dot"></span><span>Loading inbox</span></div>
+            </div>
+            <div class="conn-spin" aria-hidden="true"></div>
+          </div>
+        </div>`}
+
+      ${stage === "saved" && html`
+        <div class="mail-wrap" style=${{ height: "auto", width: "min(420px, 100%)" }}>
+          <div class="mail-head">
+            <div><div class="muted">EMAIL VIEWER</div><b>Signed in with saved token</b></div>
+            <button class="secondary" type="button" onClick=${onClose}>Close</button>
+          </div>
+          <div class="conn-body">
+            <div class="conn-orb">
+              <span class="conn-orb-core"></span>
+              <span class="conn-orb-ring"></span>
+              <span class="conn-orb-ring conn-orb-ring2"></span>
+            </div>
+            <div class="conn-what">Using saved token — no proxy needed</div>
+            <div class="conn-via">${email}</div>
+            <div class="conn-steps">
+              <div class="conn-step done"><span class="conn-dot">✓</span><span>Saved token found</span></div>
+              <div class="conn-step active"><span class="conn-dot"></span><span>Opening inbox</span></div>
+            </div>
+            <div class="conn-spin" aria-hidden="true"></div>
+          </div>
+        </div>`}
+
       ${stage === "ask" && html`
         <div class="mail-wrap" style=${{ height: "auto", width: "min(420px, 100%)" }}>
           <div class="mail-head">
@@ -756,10 +821,10 @@ export function MailViewer({ account, onClose }) {
             ${connTries.length > 0 && html`
               <div class="conn-tries">
                 ${connTries.map((t, i) => html`
-                  <div key=${i} class=${"conn-try" + (t.ok ? " ok" : " bad")}>
+                  <div key=${i} class=${"conn-try" + (t.trying ? " busy" : t.ok ? " ok" : " bad")}>
                     <span class="conn-try-dot"></span>
                     <code>${t.proxy}</code>
-                    <span class="conn-try-note">${t.ok ? "connected" : (t.err || "failed")}</span>
+                    <span class="conn-try-note">${t.trying ? "trying…" : t.ok ? "connected" : (t.err || "failed")}</span>
                   </div>`)}
               </div>`}
             <div class="conn-spin" aria-hidden="true"></div>
@@ -778,10 +843,10 @@ export function MailViewer({ account, onClose }) {
             ${connTries.length > 0 && html`
               <div class="conn-tries">
                 ${connTries.map((t, i) => html`
-                  <div key=${i} class=${"conn-try" + (t.ok ? " ok" : " bad")}>
+                  <div key=${i} class=${"conn-try" + (t.trying ? " busy" : t.ok ? " ok" : " bad")}>
                     <span class="conn-try-dot"></span>
                     <code>${t.proxy}</code>
-                    <span class="conn-try-note">${t.ok ? "connected" : (t.err || "failed")}</span>
+                    <span class="conn-try-note">${t.trying ? "trying…" : t.ok ? "connected" : (t.err || "failed")}</span>
                   </div>`)}
               </div>`}
             <div class="conn-btns">

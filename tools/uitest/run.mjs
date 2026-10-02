@@ -257,8 +257,10 @@ console.log("== viewer ==");
 
   // open mail viewer (probe ok on first open → straight into the client)
   [...d.querySelectorAll("button")].find((b) => b.textContent === "Email Viewer").click();
-  await sleep(80);
+  await sleep(120);
   assert(d.body.textContent.includes("EMAIL VIEWER"), "mail modal open");
+  assert(d.body.textContent.includes("Saved token"), "saved-token animation shown before opening");
+  await sleep(1100);
   assert(d.body.textContent.includes("Test mail"), "mail subject in list");
   assert([...d.querySelectorAll(".mail-item b")].some((b) => b.textContent === "sender@example.com"), "sender grouped list");
   // select message

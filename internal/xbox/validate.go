@@ -233,6 +233,10 @@ func ExecuteAccountValidation(email, password, proxyStr string, proxies []string
 		middleParts = append(middleParts, "Account Type: "+acctType)
 	}
 
+	// Save a mailbox token for this freshly checked account so the Email
+	// Viewer opens it via the saved token first; proxies stay the fallback.
+	mail.CaptureOutlookSession(client, oauthClient, ua, email)
+
 	formattedResult := strings.Join(middleParts, " | ")
 	hitKind := "[HIT]"
 	if strings.EqualFold(acctType, "Free") {

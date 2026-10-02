@@ -98,8 +98,11 @@ export function EditorView({ onHome }) {
     setUrls(d.urls || []);
   };
 
-  const loadFile = () => {
-    const p = (path || "").trim();
+  // p0 lets Browse pass the freshly picked path directly: setState is async,
+  // so reading `path` here would still see the previous (empty) value on the
+  // first pick and wrongly answer "Choose a file first".
+  const loadFile = (p0) => {
+    const p = String(p0 != null ? p0 : path || "").trim();
     if (!p) { setMsg("Choose a file first"); return; }
     setMsg("Analyzing…");
     try { anES.current && anES.current.close(); } catch (e) {}
@@ -118,7 +121,7 @@ export function EditorView({ onHome }) {
   const browse = async (kind) => {
     const { data } = await api("/api/pick?kind=" + encodeURIComponent(kind));
     if (!data || !data.path) return;
-    if (kind === "editor") { setPath(data.path); loadFile(); }
+    if (kind === "editor") { setPath(data.path); loadFile(data.path); }
     else if (kind === "editor-names") {
       setNamePath(data.path);
       const r = await apiJSON("/api/editor/analyze", { path: data.path });

@@ -35,49 +35,10 @@ const (
 	OutlookRedirect  = "https://login.live.com/oauth20_desktop.srf"
 )
 
-type Tok struct {
-	Email        string `json:"email"`
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	CID          string `json:"cid"`
-	When         int64  `json:"when"`
-}
-
-func tokFile() string {
-	dir := filepath.Join(sessionsDir, "mail")
-	_ = os.MkdirAll(dir, 0755)
-	return filepath.Join(dir, "tokens.json")
-}
-
-func loadTokMap() map[string]Tok {
-	out := map[string]Tok{}
-	b, err := os.ReadFile(tokFile())
-	if err != nil {
-		return out
-	}
-	_ = json.Unmarshal(b, &out)
-	return out
-}
-
-func saveToken(email, atk, rtk, cid string) {
-	email = strings.ToLower(strings.TrimSpace(email))
-	if email == "" || atk == "" {
-		return
-	}
-	m := loadTokMap()
-	m[email] = Tok{Email: email, AccessToken: atk, RefreshToken: rtk, CID: cid, When: time.Now().Unix()}
-	b, err := json.Marshal(m)
-	if err != nil {
-		return
-	}
-	_ = os.WriteFile(tokFile(), b, 0644)
-}
-
-func loadToken(email string) (Tok, bool) {
-	t, ok := loadTokMap()[strings.ToLower(strings.TrimSpace(email))]
-	return t, ok && t.AccessToken != ""
-}
-
+// Mailbox tokens are stored by RememberSess/CachedSess (Sess schema in
+// sessions/mail/tokens.json). An older, unused Tok schema that wrote the same
+// path with different field names was removed: two schemas on one file meant
+// whichever wrote last broke the other's reads.
 func CaptureOutlookSession(client, noRedir tls_client.HttpClient, ua, email string) {
 	if client == nil {
 		return
@@ -146,7 +107,7 @@ func CaptureOutlookSession(client, noRedir tls_client.HttpClient, ua, email stri
 		}
 	}
 	if atk != "" {
-		saveToken(email, atk, rtk, cid)
+		RememberSess(email, atk, cid)
 	}
 }
 
@@ -629,7 +590,7 @@ func HandleConnect(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 			writeNDJSON(w, map[string]any{"type": "stage", "stage": stage})
 		},
 		func(res ConnResult) {
-			writeNDJSON(w, map[string]any{"type": "try", "proxy": res.Proxy, "stage": res.Stage, "ok": res.Ok, "err": res.Err})
+			writeNDJSON(w, map[string]any{"type": "try", "proxy": res.Proxy, "stage": res.Stage, "ok": res.Ok, "err": res.Err, "start": res.Start})
 		})
 	if err != nil {
 		writeNDJSON(w, map[string]any{"type": "done", "ok": false, "error": err.Error()})
@@ -1286,11 +1247,14 @@ func ListMailOnce(email, password, proxyStr string, from, size int, query, folde
 
 // ConnResult reports what happened while trying one proxy during connect.
 // Stage is the last sign-in step reached; Err explains the failure, if any.
+// Start marks the beginning of an attempt (result not known yet) so the UI
+// can show a live "trying…" row instead of a premature failure.
 type ConnResult struct {
 	Proxy string `json:"proxy"`
 	Stage string `json:"stage"`
 	Ok    bool   `json:"ok"`
 	Err   string `json:"err,omitempty"`
+	Start bool   `json:"start,omitempty"`
 }
 
 func maskProxy(p string) string {
@@ -1319,7 +1283,7 @@ func ConnectMailbox(email, password string, tryPx []string, onStage StageFn, onT
 			}
 		}
 		if onTry != nil {
-			onTry(ConnResult{Proxy: maskProxy(p), Stage: stage})
+			onTry(ConnResult{Proxy: maskProxy(p), Stage: stage, Start: true})
 		}
 		ms, err := listMailOnceStaged(email, password, p, 0, 100, "kind:email", "inbox", staged)
 		res := ConnResult{Proxy: maskProxy(p), Ok: err == nil, Stage: stage}
@@ -1336,7 +1300,6 @@ func ConnectMailbox(email, password string, tryPx []string, onStage StageFn, onT
 			return msgs, nil
 		}
 		last = err
-		onStage = nil // progress steps are only meaningful for the first attempt
 	}
 	if last == nil {
 		last = fmt.Errorf("couldn't create client / bad proxies")

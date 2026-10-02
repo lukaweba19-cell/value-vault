@@ -5,6 +5,15 @@ export function RunView({ status, onPause, onStop, onHome }) {
   const [snap, setSnap] = useState(null);
   const logsRef = useRef(null);
   const hitsRef = useRef(null);
+  // Stick-to-bottom for both logs: keep following the newest lines while the
+  // user is already at (or near) the bottom, but once they scroll up to read
+  // history, stay where they are until they scroll back down themselves.
+  const stickLogs = useRef(true);
+  const stickHits = useRef(true);
+  const onLogScroll = (ref) => (e) => {
+    const el = e.currentTarget;
+    ref.current = el.scrollHeight - el.scrollTop - el.clientHeight < 28;
+  };
 
   useEffect(() => {
     let alive = true;
@@ -18,6 +27,17 @@ export function RunView({ status, onPause, onStop, onHome }) {
     const t = setInterval(tick, 1200);
     return () => { alive = false; clearInterval(t); };
   }, []);
+
+  // Runs after every render (i.e. after each snapshot repaint) so new lines
+  // are pulled into view exactly when the user hasn't scrolled away.
+  useEffect(() => {
+    const el = logsRef.current;
+    if (el && stickLogs.current) el.scrollTop = el.scrollHeight;
+  });
+  useEffect(() => {
+    const el = hitsRef.current;
+    if (el && stickHits.current) el.scrollTop = el.scrollHeight;
+  });
 
   const s = snap || {};
   const cpm = Number(s.rate_cpm || 0);
@@ -44,13 +64,13 @@ export function RunView({ status, onPause, onStop, onHome }) {
             <${Tag} kind="orange">Daily <b>${(s.daily || 0) + " / " + (s.limit || 0)}</b><//>
           </div>
           <label>Activity</label>
-          <div class="log" ref=${logsRef} style="color:#fb7185">
+          <div class="log" ref=${logsRef} onScroll=${onLogScroll(stickLogs)} style="color:#fb7185">
             ${logs.map((line, i) => html`<div key=${i} style=${{ color: /\[HIT\]|\[Free Hit\]|\[Private Hit\]/i.test(line) ? "#9af0c8" : "#f5a8a8" }}>${line}</div>`)}
           </div>
         </div>
         <div>
           <label>Hits</label>
-          <div class="log" ref=${hitsRef} style="color:#a7f3d0">${hitsText}</div>
+          <div class="log" ref=${hitsRef} onScroll=${onLogScroll(stickHits)} style="color:#a7f3d0">${hitsText}</div>
         </div>
       </div>
       <div class="row">
