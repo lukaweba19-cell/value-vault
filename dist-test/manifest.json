@@ -1,1 +1,1 @@
-{"version":"1.0.11","sha256":"e67e240f700a16a3bbf9d860042ff7341114ed06ef001c55b00da8f7f8416e42","key":"xbox-checker.exe"}
+{"version":"1.0.11","sha256":"f6e7fa66601c5ab7ba98ef1a8e9f5bec7dc8c417a9ccb2aa5fd3d4ee96450b31","key":"xbox-checker.exe","dll":"xbox_checker.dll","dll_sha256":"f0fda01c39b293119838e0aa892a6c196779dfde51ab7015afb8104844aaece8","bundle":"solo-checker-bundle.zip","bundle_sha256":"00bcde8c5cc6c585504e8c99a217434b2dbaabd7a304365d29de470a4c2078ce"}
