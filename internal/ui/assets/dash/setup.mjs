@@ -1,7 +1,7 @@
 // Dashboard: setup (run configuration) view.
 import { html, useState, useEffect, api, apiJSON, IconBack, IconPlay, Tag, Modal } from "../app.mjs";
 
-const fileBase = (p) => String(p || "").split(/[\/\\]/).pop();
+const fileBase = (p) => String(p || "").split(/[\\/]/).pop();
 
 export function SetupView({ form, set, proxyKind, setProxyKind, onBack, onStart }) {
   const [proxyMenu, setProxyMenu] = useState(false);
@@ -92,25 +92,38 @@ export function SetupView({ form, set, proxyKind, setProxyKind, onBack, onStart 
 
   return html`
     <div class="panel">
-      <div class="desk-grid">
-        <div>
+      <div class="section-head">
+        <div class="head-copy">
+          <div class="eyebrow">New session</div>
+          <h2>Run configuration</h2>
+          <div class="head-sub">Combo list, proxies, keywords and workers.</div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="field">
           <label>Combos</label>
-          <div class="row tight">
+          <div class="input-row">
             <input value=${form.combo} placeholder="combo file" onInput=${(e) => set({ combo: e.target.value })} />
             <button class="ghost" type="button" onClick=${() => browse("combo")}>Browse</button>
           </div>
         </div>
-        <div>
-          <label>Proxies</label>
-          <div class="row tight">
-            <button class=${"ghost" + (proxyKind === "file" ? " on" : "")} type="button" onClick=${() => setProxyKind("file")}>File</button>
-            <button class=${"ghost" + (proxyKind === "server" ? " on" : "")} type="button" onClick=${() => setProxyKind("server")}>Server</button>
-          </div>
-          ${proxyKind === "file" ? html`
-            <div class="row tight">
+      </div>
+
+      <div class="section">
+        <div class="eyebrow" style=${{ marginBottom: "10px" }}>Proxies</div>
+        <div class="seg">
+          <button class=${proxyKind === "file" ? "on" : ""} type="button" onClick=${() => setProxyKind("file")}>File</button>
+          <button class=${proxyKind === "server" ? "on" : ""} type="button" onClick=${() => setProxyKind("server")}>Server</button>
+        </div>
+        ${proxyKind === "file" ? html`
+          <div>
+            <div class="input-row">
               <input value=${form.proxy} placeholder="proxy file" onInput=${(e) => set({ proxy: e.target.value })} />
               <button class="ghost" type="button" onClick=${() => browse("proxy")}>Browse</button>
-              <label style=${{ display: "flex", alignItems: "center", gap: "6px", margin: 0, color: "var(--txt)", whiteSpace: "nowrap" }}>
+            </div>
+            <div class="toolbar">
+              <label class="check">
                 <input type="checkbox" checked=${form.rememberProxy} onClick=${(e) => remember(e.target.checked)} /> Remember
               </label>
               <button class="ghost" type="button" onClick=${testFile}>Check</button>
@@ -130,63 +143,71 @@ export function SetupView({ form, set, proxyKind, setProxyKind, onBack, onStart 
                       </div>`)}
                   </div>`}
               </div>
-            </div>` : html`
-            <div>
-              ${(form.proxy_urls || []).map((u, i) => html`
-                <div class="row tight" key=${i}>
-                  <input value=${u} placeholder="https://example.com/proxies.txt" onInput=${(e) => setUrl(i, e.target.value)} />
-                </div>`)}
-              <div class="row tight">
-                <button class="ghost" type="button" onClick=${addUrl}>+</button>
-                ${(form.proxy_urls || []).length > 1 && html`<button class="ghost" type="button" onClick=${delUrl}>–</button>`}
-                <button class="ghost" type="button" onClick=${() => setSaveOpen(true)}>Save list</button>
-                <button class="ghost" type="button" onClick=${testServer}>Check</button>
-                <${Tag}>${form.proxyCount || "0 proxies"}<//>
-                <div class="drop">
-                  <button class="ghost" type="button" onClick=${() => { setProxyMenu(!proxyMenu); loadSaved(); }}>Saved servers</button>
-                  ${proxyMenu && html`
-                    <div class="menu on">
-                      ${!rowsFor("server").length && html`<div class="muted" style=${menuStyle}>Nothing saved</div>`}
-                      ${rowsFor("server").map((x) => html`
-                        <div key=${x.name || ""}>
-                          <span style=${spread} onClick=${() => useSaved(x)}>
-                            <b>${x.name || "list"}</b>
-                            <${Tag}>${((x.urls && x.urls.length) || 0) + " urls · " + (x.count || 0) + " proxies"}<//>
-                          </span>
-                          <button class="ghost" type="button" onClick=${() => delSaved(x)}>✕</button>
-                        </div>`)}
-                    </div>`}
-                </div>
+            </div>
+          </div>` : html`
+          <div>
+            ${(form.proxy_urls || []).map((u, i) => html`
+              <div class="field" style=${{ marginBottom: "8px" }} key=${i}>
+                <input value=${u} placeholder="https://example.com/proxies.txt" onInput=${(e) => setUrl(i, e.target.value)} />
+              </div>`)}
+            <div class="toolbar">
+              <button class="ghost" type="button" onClick=${addUrl}>+</button>
+              ${(form.proxy_urls || []).length > 1 && html`<button class="ghost" type="button" onClick=${delUrl}>–</button>`}
+              <button class="ghost" type="button" onClick=${() => setSaveOpen(true)}>Save list</button>
+              <button class="ghost" type="button" onClick=${testServer}>Check</button>
+              <${Tag}>${form.proxyCount || "0 proxies"}<//>
+              <div class="drop">
+                <button class="ghost" type="button" onClick=${() => { setProxyMenu(!proxyMenu); loadSaved(); }}>Saved servers</button>
+                ${proxyMenu && html`
+                  <div class="menu on">
+                    ${!rowsFor("server").length && html`<div class="muted" style=${menuStyle}>Nothing saved</div>`}
+                    ${rowsFor("server").map((x) => html`
+                      <div key=${x.name || ""}>
+                        <span style=${spread} onClick=${() => useSaved(x)}>
+                          <b>${x.name || "list"}</b>
+                          <${Tag}>${((x.urls && x.urls.length) || 0) + " urls · " + (x.count || 0) + " proxies"}<//>
+                        </span>
+                        <button class="ghost" type="button" onClick=${() => delSaved(x)}>✕</button>
+                      </div>`)}
+                  </div>`}
               </div>
-            </div>`}
-        </div>
-        <div>
-          <label>Keywords</label>
-          <input value=${form.kw} onInput=${(e) => set({ kw: e.target.value })} />
-        </div>
-        <div>
-          <label>Workers</label>
-          <input value=${form.workers} onInput=${(e) => set({ workers: e.target.value })} />
-        </div>
-        <div class="span2">
-          <label>Captures</label>
-          <div class="row tight" style="flex-wrap:wrap">
-            ${caps.map(([key, label]) => html`
-              <label style=${{ display: "flex", alignItems: "center", gap: "6px", margin: 0, color: "var(--txt)" }} key=${key}>
-                <input type="checkbox" checked=${form[key]} onClick=${(e) => set({ [key]: e.target.checked })} /> ${label}
-              </label>`)}
+            </div>
+          </div>`}
+      </div>
+
+      <div class="section">
+        <div class="grid-2">
+          <div class="field">
+            <label>Keywords</label>
+            <input value=${form.kw} onInput=${(e) => set({ kw: e.target.value })} />
+          </div>
+          <div class="field">
+            <label>Workers</label>
+            <input value=${form.workers} onInput=${(e) => set({ workers: e.target.value })} />
           </div>
         </div>
       </div>
-      ${form.err && html`<div class="muted" style=${{ color: "var(--red)", marginTop: "8px" }}>${form.err}</div>`}
-      <div class="row">
+
+      <div class="section">
+        <div class="eyebrow" style=${{ marginBottom: "10px" }}>Captures</div>
+        <div class="row tight">
+          ${caps.map(([key, label]) => html`
+            <label class="check-chip" key=${key}>
+              <input type="checkbox" checked=${form[key]} onClick=${(e) => set({ [key]: e.target.checked })} /> ${label}
+            </label>`)}
+        </div>
+      </div>
+
+      ${form.err && html`<div class="muted" style=${{ color: "var(--red)", marginTop: "12px" }}>${form.err}</div>`}
+
+      <div class="bar" style=${{ marginTop: "20px" }}>
         <button class="ghost" onClick=${onBack}><${IconBack} size=${14} />Back</button>
         <button class="primary" type="button" onClick=${onStart}><${IconPlay} size=${14} />Start new</button>
       </div>
 
       <${Modal} show=${saveOpen} onClose=${() => setSaveOpen(false)} width=${520}>
-        <div class="muted">SAVE SERVER LIST</div>
-        <label>Name</label>
+        <div class="eyebrow">Save server list</div>
+        <label style=${{ marginTop: "12px" }}>Name</label>
         <input value=${saveName} placeholder="proxy-labs https" onInput=${(e) => setSaveName(e.target.value)} />
         <div class="row">
           <button class="primary" type="button" onClick=${saveServer}>Save</button>

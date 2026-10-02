@@ -44,39 +44,60 @@ export function RunView({ status, onPause, onStop, onHome }) {
   const logs = (s.logs || []).slice(-80);
   const hitsText = (s.hits || []).join("\n");
 
+  const tiles = [
+    ["Checked", (s.checked || 0) + " / " + (s.total || 0), ""],
+    ["Running", s.elapsed || "0s", ""],
+    ["ETA", s.eta || "—", ""],
+    ["Speed", cpm > 0 ? (cpm >= 10 ? Math.round(cpm) + "/min" : cpm.toFixed(1) + "/min") : "—", ""],
+    ["Daily", (s.daily || 0) + " / " + (s.limit || 0), ""],
+  ];
+
   return html`
     <div class="panel">
-      <div class="run-split">
-        <div>
-          <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px">
-            <${Tag} kind=${s.paused ? "warn" : (s.running ? "yellow" : "")}>${s.status || "Ready"}<//>
-            <${Tag} kind="yellow">Checked <b>${(s.checked || 0) + " / " + (s.total || 0)}</b><//>
-            <${Tag} kind="yellow">Running <b>${s.elapsed || "0s"}</b><//>
-            <${Tag} kind="yellow">ETA <b>${s.eta || "—"}</b><//>
-            <${Tag} kind="red">Speed <b>${cpm > 0 ? (cpm >= 10 ? Math.round(cpm) + "/min" : cpm.toFixed(1) + "/min") : "—"}</b><//>
+      <div class="bar">
+        <div class="btnbar">
+          <${Tag} kind=${s.paused ? "warn" : (s.running ? "yellow" : "")}>${s.status || "Ready"}<//>
+        </div>
+        <div class="btnbar">
+          <button class="primary" onClick=${onPause}>${s.paused ? "Resume checking" : "Pause"}</button>
+          <button class="ghost" type="button" onClick=${onStop}>Stop</button>
+          <button class="ghost" onClick=${onHome}><${IconBack} size=${14} />Home</button>
+        </div>
+      </div>
+
+      <div class="statgrid" style=${{ marginTop: "16px" }}>
+        ${tiles.map(([k, v]) => html`
+          <div class="stat-tile" key=${k}>
+            <div class="k">${k}</div>
+            <div class="v">${v}</div>
+          </div>`)}
+      </div>
+
+      <div class="toolbar">
+        <${Tag} kind="green">Valid <b>${s.valid || 0}</b><//>
+        <${Tag} kind="green">Free <b>${s.free || 0}</b><//>
+        <${Tag} kind="blue">Private <b>${s.private || 0}</b><//>
+        <${Tag} kind="warn">Invalid <b>${s.invalid || 0}</b><//>
+        <${Tag} kind="red">Retries <b>${s.retries || 0}</b><//>
+      </div>
+
+      <div class="run-split" style=${{ marginTop: "16px" }}>
+        <div class="logpane">
+          <div class="log-head">
+            <span class="eyebrow">Activity</span>
+            <span class="muted">live</span>
           </div>
-          <div style="display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 14px">
-            <${Tag} kind="green">Valid <b>${s.valid || 0}</b><//>
-            <${Tag} kind="green">Free <b>${s.free || 0}</b><//>
-            <${Tag} kind="blue">Private <b>${s.private || 0}</b><//>
-            <${Tag} kind="warn">Invalid <b>${s.invalid || 0}</b><//>
-            <${Tag} kind="red">Retries <b>${s.retries || 0}</b><//>
-            <${Tag} kind="orange">Daily <b>${(s.daily || 0) + " / " + (s.limit || 0)}</b><//>
-          </div>
-          <label>Activity</label>
-          <div class="log" ref=${logsRef} onScroll=${onLogScroll(stickLogs)} style="color:#fb7185">
+          <div class="log" ref=${logsRef} onScroll=${onLogScroll(stickLogs)}>
             ${logs.map((line, i) => html`<div key=${i} style=${{ color: /\[HIT\]|\[Free Hit\]|\[Private Hit\]/i.test(line) ? "#9af0c8" : "#f5a8a8" }}>${line}</div>`)}
           </div>
         </div>
-        <div>
-          <label>Hits</label>
+        <div class="logpane">
+          <div class="log-head">
+            <span class="eyebrow">Hits</span>
+            <span class="muted">${(s.hits || []).length} lines</span>
+          </div>
           <div class="log" ref=${hitsRef} onScroll=${onLogScroll(stickHits)} style="color:#a7f3d0">${hitsText}</div>
         </div>
-      </div>
-      <div class="row">
-        <button class="primary" onClick=${onPause}>${s.paused ? "Resume checking" : "Pause"}</button>
-        <button class="ghost" type="button" onClick=${onStop}>Stop</button>
-        <button class="ghost" onClick=${onHome}><${IconBack} size=${14} />Home</button>
       </div>
     </div>`;
 }

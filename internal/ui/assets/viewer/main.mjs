@@ -1,6 +1,6 @@
 // Valid Viewer entry: accounts browser + mailbox viewer, Preact port.
 // Same endpoints and behaviors as the original HTML UI.
-import { html, useState, useEffect, useRef, api, copyText } from "../app.mjs";
+import { html, useState, useEffect, useRef, api, copyText, XboxLogo } from "../app.mjs";
 import { MailViewer, formatMailDate } from "./mail.mjs";
 
 const fmtBytes = (n) => {
@@ -71,7 +71,7 @@ function AccountCard({ a, onMail, toast }) {
         <button type="button" onClick=${() => doCopy("email")}>Copy email</button>
         <button type="button" onClick=${() => doCopy("combo")}>Copy combo</button>
         <button type="button" onClick=${() => doCopy("raw")}>Copy line</button>
-        <button type="button" onClick=${() => onMail(a)}>Email Viewer</button>
+        <button class="primary" type="button" onClick=${() => onMail(a)}>Email Viewer</button>
       </div>
     </article>`;
 }
@@ -166,6 +166,17 @@ export function App() {
   };
 
   return html`
+    <div class="app">
+      <div class="topbar">
+        <div class="crumbs">
+          <span class="crumb-mark"><${XboxLogo} /></span>
+          <span class="crumb">SOLO Checker</span>
+          <span class="crumb-sep">/</span>
+          <span class="crumb-now">Valid Viewer</span>
+        </div>
+        <span class="status-pill"><span class="dot on"></span>Online</span>
+      </div>
+
     <header>
       <div class="wrap">
         <div class="title-row">
@@ -200,7 +211,7 @@ export function App() {
             <option value="country">Country</option>
             <option value="line">Line number</option>
           </select>
-          <button type="button" onClick=${search}>Filter</button>
+          <button class="primary" type="button" onClick=${search}>Filter</button>
           <button class="secondary" type="button" onClick=${clear}>Clear</button>
         </div>
         <div class="chips">
@@ -234,6 +245,21 @@ export function App() {
       </div>
       ${!accounts.length && html`<div class="empty">No accounts match your filters.</div>`}
     </main>
+
+      <div class="statusbar">
+        <div class="sb-group">
+          <span class="dot on"></span>
+          <span>connected</span>
+          <span class="sb-sep"></span>
+          <span class="sb-strong">${s.file_path || "valid.txt"}</span>
+        </div>
+        <div class="sb-group">
+          <span class="sb-strong">Valid Viewer</span>
+          <span class="sb-sep"></span>
+          <span>${count} account(s) matched</span>
+        </div>
+      </div>
+    </div>
 
     ${toastMsg && html`<div class="toast show">${toastMsg}</div>`}
 

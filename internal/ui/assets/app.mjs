@@ -99,6 +99,11 @@ export const IconPlay = (props) => html`
   <svg viewBox="0 0 24 24" fill="none" width=${props.size || 14} height=${props.size || 14}>
     <path d="M8 5v14l11-7z" fill="#fff"/>
   </svg>`;
+export const IconHome = (props) => html`
+  <svg viewBox="0 0 24 24" fill="none" width=${props.size || 14} height=${props.size || 14}>
+    <path d="M4 11l8-7 8 7v8a1.5 1.5 0 01-1.5 1.5h-13A1.5 1.5 0 014 19v-8z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+    <path d="M10 20.5v-6h4v6" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+  </svg>`;
 
 /* Telegram mark: circle painted with the per-instance gradient (ids tg0/tgA/tgB
    match the original UI). The gradient id must resolve or the blue circle
@@ -130,7 +135,7 @@ export const UidLine = ({ uid }) => {
     });
   };
   return html`
-    <div class="tag" style=${{ marginTop: "10px", cursor: "pointer" }} title="Click to copy" onClick=${copy}>
+    <div class="tag" style=${{ cursor: "pointer" }} title="Click to copy" onClick=${copy}>
       ${copied ? "ID " + uid + " copied" : "ID " + uid}
     </div>`;
 };

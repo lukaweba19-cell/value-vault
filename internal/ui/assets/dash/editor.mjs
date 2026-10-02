@@ -1,5 +1,5 @@
 // Dashboard: combo editor (load/clean, generate, signatures) as Preact components.
-import { html, useState, useEffect, useRef, api, apiJSON, IconSave, IconDownload, IconNew, Tag, Modal } from "../app.mjs";
+import { html, useState, useEffect, useRef, api, apiJSON, IconSave, IconDownload, IconNew, IconNext, Tag, Modal } from "../app.mjs";
 
 const fmtSize = (n) => {
   n = Number(n) || 0;
@@ -266,29 +266,44 @@ export function EditorView({ onHome }) {
   if (view === "home") {
     return html`
       <div class="panel">
-        <div class="muted">COMBO EDITOR</div>
-        <div class="grid2" style="margin-top:12px">
+        <div class="section-head">
+          <div class="head-copy">
+            <div class="eyebrow">Combo editor</div>
+            <h2>What do you want to do?</h2>
+            <div class="head-sub">Open an existing list or generate a fresh one.</div>
+          </div>
+        </div>
+        <div class="grid-2">
           <button class="choice" type="button" onClick=${() => openWork("load")}>
             <div class="ico"><${IconDownload} size=${18} /></div>
             <h3>Load file</h3>
             <p>Open a combo or ULP list. Large files are scanned, not loaded into RAM.</p>
+            <span class="choice-go"><${IconNext} size=${14} /></span>
           </button>
           <button class="choice" type="button" onClick=${() => openWork("new")}>
             <div class="ico"><${IconNew} size=${18} /></div>
             <h3>Create new</h3>
             <p>Generate combos from names, domains and a password list.</p>
+            <span class="choice-go"><${IconNext} size=${14} /></span>
           </button>
         </div>
-        <div class="row"><button class="ghost" onClick=${onHome}>Back</button></div>
+        <div class="bar" style="margin-top:16px">
+          <button class="ghost" onClick=${onHome}>Back</button>
+        </div>
       </div>`;
   }
 
   return html`
     <div class="panel">
-      <div class="muted">${tab === "new" ? "GENERATE" : tab === "sign" ? "SIGNATURES" : "LOAD / CLEAN"}</div>
-      <div class="row" style="margin-top:8px">
-        <${Tag}>${lines + " lines"}<//>
-        <${Tag} kind="green">${fmtSize(size)}<//>
+      <div class="section-head">
+        <div class="head-copy">
+          <div class="eyebrow">${tab === "new" ? "GENERATE" : tab === "sign" ? "SIGNATURES" : "LOAD / CLEAN"}</div>
+          <h2>Combo editor</h2>
+        </div>
+        <div class="btnbar">
+          <${Tag}>${lines + " lines"}<//>
+          <${Tag} kind="green">${fmtSize(size)}<//>
+        </div>
       </div>
       <div class="tabs">
         ${mode === "load" && html`<button type="button" class=${tab === "load" ? "on" : ""} onClick=${() => setTab("load")}>File</button>`}
@@ -306,15 +321,15 @@ export function EditorView({ onHome }) {
           <${Msg} />
           <div class="desk-grid" style="margin-top:8px">
             <div>
-              <div class="row tight" style=${{ justifyContent: "space-between" }}>
-                <div class="muted">TOP EMAIL TYPES</div>
+              <div class="bar" style=${{ marginBottom: "8px" }}>
+                <div class="eyebrow">TOP EMAIL TYPES</div>
                 <button class="ghost" type="button" onClick=${() => setModalKind("email")}>View all</button>
               </div>
               ${(domains || []).slice(0, 10).map((x, i) => html`<${StatRow} key=${i} x=${x} kind="email" onSave=${saveOne} />`)}
             </div>
             <div>
-              <div class="row tight" style=${{ justifyContent: "space-between" }}>
-                <div class="muted">TOP URL / DOMAINS</div>
+              <div class="bar" style=${{ marginBottom: "8px" }}>
+                <div class="eyebrow">TOP URL / DOMAINS</div>
                 <button class="ghost" type="button" onClick=${() => setModalKind("host")}>View all</button>
               </div>
               ${(urls || []).slice(0, 10).map((x, i) => html`<${StatRow} key=${i} x=${x} kind="host" onSave=${saveOne} />`)}
@@ -336,8 +351,8 @@ export function EditorView({ onHome }) {
           </div>
           <div class="muted" style=${{ color: "#9af0c8", margin: "8px 0" }}>${filterStatus}</div>
           ${filterState === "done" && html`
-            <div class="row" style=${{ justifyContent: "space-between" }}>
-              <div class="muted">FILTERED EMAIL TYPES</div>
+            <div class="bar" style=${{ marginTop: "14px", marginBottom: "4px" }}>
+              <div class="eyebrow">FILTERED EMAIL TYPES</div>
               <button class="ghost" type="button" onClick=${() => setModalKind("filter")}>View all</button>
             </div>`}
           ${(filterState === "done" ? filterAll : []).slice(0, 10).map((x, i) => html`<${StatRow} key=${i} x=${x} kind="email" onSave=${saveOne} />`)}
@@ -400,9 +415,11 @@ export function EditorView({ onHome }) {
           </div>
         </div>`}
 
-      <div class="row">
-        <button class="ghost" type="button" onClick=${() => setView("home")}>Back</button>
-        <button class="ghost" onClick=${onHome}>Home</button>
+      <div class="bar" style="margin-top:20px">
+        <div class="btnbar">
+          <button class="ghost" type="button" onClick=${() => setView("home")}>Back</button>
+          <button class="ghost" onClick=${onHome}>Home</button>
+        </div>
       </div>
 
       <${Modal} show=${modalKind !== null} onClose=${() => setModalKind(null)}>

@@ -8,35 +8,57 @@ export const Choice = ({ icon: Icon, tg: Tg, title, desc, onClick }) => html`
       : html`<div class="ico"><${Icon} size=${18} /></div>`}
     <h3>${title}</h3>
     <p>${desc}</p>
+    <span class="choice-go"><${IconNext} size=${14} /></span>
   </button>`;
 
 export function HomeView({ onNew, onResume, onEditor, onOpenViewer, onLive, live, uid }) {
   return html`
     <div class="panel">
-      <div class="grid2">
-        <${Choice} icon=${IconNew} title="Start new"
-          desc="New combo list, proxies, keywords and workers." onClick=${onNew} />
-        <${Choice} icon=${IconResume} title="Resume session"
-          desc="Pick a saved session and continue unfinished lines + retries." onClick=${onResume} />
-        <${Choice} icon=${IconEditor} title="Editor"
-          desc="Build, clean, extract and export combo lists." onClick=${onEditor} />
+      <div class="section">
+        <div class="section-head">
+          <div class="head-copy">
+            <div class="eyebrow">Workspace</div>
+            <h2>Start a session</h2>
+            <div class="head-sub">Pick a list, tune the run, watch it work.</div>
+          </div>
+        </div>
+        <div class="grid-3">
+          <${Choice} icon=${IconNew} title="Start new"
+            desc="New combo list, proxies, keywords and workers." onClick=${onNew} />
+          <${Choice} icon=${IconResume} title="Resume session"
+            desc="Pick a saved session and continue unfinished lines + retries." onClick=${onResume} />
+          <${Choice} icon=${IconEditor} title="Editor"
+            desc="Build, clean, extract and export combo lists." onClick=${onEditor} />
+        </div>
+        <div class="bar" style=${{ marginTop: "16px" }}>
+          <div class="btnbar">
+            <button class="primary" type="button" onClick=${onOpenViewer}>
+              <${IconList} size=${14} />View valid
+            </button>
+            ${live && html`
+              <button class="primary" type="button" style=${{ boxShadow: "0 0 0 3px rgba(124,92,255,.25)" }} onClick=${onLive}>
+                Live run
+              </button>`}
+          </div>
+          <div class="muted">Results land in valid.txt — open the viewer to browse them.</div>
+        </div>
       </div>
-      <div class="row" style="margin-top:14px">
-        <button class="primary" type="button" onClick=${onOpenViewer}>
-          <${IconList} size=${14} />View valid
-        </button>
-        ${live && html`
-          <button class="primary" type="button" style="box-shadow:0 0 0 3px rgba(124,92,255,.25)" onClick=${onLive}>
-            Live run
-          </button>`}
-      </div>
-      <div class="grid2" style="margin-top:14px">
-        <${Choice} tg=${TelegramTgA} title="Tools & Updates"
-          desc="Go here for tools, updates, and new releases."
-          onClick=${() => openLink("https://t.me/+naqymNMpt75jYjdh")} />
-        <${Choice} tg=${TelegramTgB} title="Chat"
-          desc="Go here to chat with everyone in the community."
-          onClick=${() => openLink("https://t.me/+cueTzd36nb9jNWQx")} />
+
+      <div class="section">
+        <div class="section-head">
+          <div class="head-copy">
+            <div class="eyebrow">Community</div>
+            <h2>Stay in the loop</h2>
+          </div>
+        </div>
+        <div class="grid-2">
+          <${Choice} tg=${TelegramTgA} title="Tools & Updates"
+            desc="Go here for tools, updates, and new releases."
+            onClick=${() => openLink("https://t.me/+naqymNMpt75jYjdh")} />
+          <${Choice} tg=${TelegramTgB} title="Chat"
+            desc="Go here to chat with everyone in the community."
+            onClick=${() => openLink("https://t.me/+cueTzd36nb9jNWQx")} />
+        </div>
       </div>
     </div>`;
 }
@@ -74,31 +96,36 @@ export function ResumeView({ onBack, onPick }) {
 
   return html`
     <div class="panel">
-      <div class="muted">SAVED SESSIONS</div>
+      <div class="section-head">
+        <div class="head-copy">
+          <div class="eyebrow">Saved sessions</div>
+          <h2>Resume where you left off</h2>
+          <div class="head-sub">Unfinished lines and retries are kept per session.</div>
+        </div>
+      </div>
       <div>
         ${sessions === null && html`<div class="muted">Loading sessions...</div>`}
         ${sessions !== null && !list.length && html`<div class="muted">No saved sessions</div>`}
-        ${slice.map((x) => {
-          const n = start + list.indexOf(x);
-          return html`
+        ${slice.map((x) => html`
             <div class=${"sess" + (picked === x.file ? " on" : "")} onClick=${() => setPicked(x.file || "")} key=${x.file}>
-              <b>${x.combo || ""}</b>
-              <div style="display:flex;flex-wrap:wrap;gap:6px;margin:8px 0">
+              <div class="bar">
+                <b>${x.combo || ""}</b>
+                <div class="muted">started ${x.started || "-"} · updated ${x.updated || "-"}</div>
+              </div>
+              <div style=${{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "9px" }}>
                 <${Tag} kind="green">workers ${x.workers || 0}<//>
                 <${Tag} kind="warn">retries ${x.retries || 0}<//>
                 ${x.proxy && html`<${Tag}>${x.proxy}<//>`}
                 ${x.keywords && html`<${Tag}>keywords<//>`}
               </div>
-              <div class="muted">started ${x.started || "-"} · updated ${x.updated || "-"}</div>
-            </div>`;
-        })}
+            </div>`)}
       </div>
       <div class="pages">
         <button class="ghost" onClick=${() => setPage(clamped - 1)}>Prev</button>
         <div class="muted">${list.length ? "Page " + (clamped + 1) + " / " + pages : ""}</div>
         <button class="ghost" onClick=${() => setPage(clamped + 1)}>Next</button>
       </div>
-      <div class="row">
+      <div class="bar" style=${{ marginTop: "14px" }}>
         <button class="ghost" onClick=${onBack}>
           <${IconBack} size=${14} />Back
         </button>

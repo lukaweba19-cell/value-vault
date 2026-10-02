@@ -538,78 +538,100 @@ export function MailViewer({ account, onClose }) {
       ${stage === "main" && html`
         <div class="mail-wrap">
           <div class="mail-head">
-            <div>
-              <div class="muted">EMAIL VIEWER</div>
-              <b>${email}</b>
+            <div class="crumbs">
+              <span class="crumb-mark"><svg viewBox="0 0 24 24" width="14" height="14" fill="none"><rect x="3" y="5.5" width="18" height="13" rx="3" stroke="#fff" stroke-width="2"/><path d="M4.5 8l7.5 5.5L19.5 8" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="crumb">EMAIL VIEWER</span>
+              <span class="crumb-sep">/</span>
+              <span class="crumb-now">${email}</span>
             </div>
-            <button class="secondary" type="button" onClick=${onClose}>Close</button>
-          </div>
-          <div class="mail-search">
-            <input placeholder="Search mailbox" value=${query} onInput=${(e) => setQuery(e.target.value)}
-              onKeyDown=${(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  const nq = (e.target.value || "").trim() || "kind:email";
-                  put({ appliedQuery: nq });
-                  loadPage(false);
-                }
-              }} />
-            <button class="secondary" type="button" onClick=${() => {
-              const nq = q || "kind:email";
-              put({ appliedQuery: nq });
-              loadPage(false);
-            }}>Search</button>
-          </div>
-          <div class="mail-folders">
-            ${FOLDERS.map(([id, label]) => html`
-              <button type="button" class=${"mail-folder" + (folder === id ? " on" : "")}
-                onClick=${() => {
-                  put({
-                    folder: id, fromFilter: "", appliedQuery: "kind:email",
-                    packs: {}, picked: {}, mails: [], total: 0,
-                  });
-                  setQuery(""); setMore(false); put({ sel: -1 }); setSelAll(false);
-                  setTimeout(() => loadPage(false, { fromFilter: "" }), 0);
-                }}>${label}</button>`)}
-          </div>
-          <div class="mail-toolbar">
-            <label class="mail-check">
-              <input type="checkbox" checked=${selAll} onClick=${(e) => {
-                const on = e.target.checked;
-                setSelAll(on);
-                const p = {};
-                if (on) activeList.forEach((m) => { if (m && m.id) p[m.id] = true; });
-                put({ picked: p });
-              }} /> Select all
-            </label>
-            <button class="secondary" type="button" onClick=${deletePicked}>Delete selected</button>
-            ${folder === "deleted" && html`<button class="secondary danger" type="button" onClick=${emptyDeleted}>Empty deleted</button>`}
-            <span class="muted">${Object.keys(picked || {}).length ? Object.keys(picked).length + " selected" : ""}</span>
+            <div class="btnbar">
+              <span class="status-pill"><span class="dot on"></span>Online</span>
+              <button class="secondary" type="button" onClick=${onClose}>Close</button>
+            </div>
           </div>
           <div class="mail-body">
-            <div class="mail-list">
-              <div class=${"mail-item" + (!fromFilter ? " on" : "")} onClick=${() => { put({ fromFilter: "" }); put({ sel: -1 }); }}>
-                <div class="mail-item-body">
-                  <b>All senders</b>
-                  <div class="mail-from">
-                    <span class="mail-chip tag-green">Total messages: ${total || mails.length}</span>
-                    <span class="mail-chip tag-green">${senderKeys.length} senders</span>
-                  </div>
+            <div class="mail-side">
+              <div class="mail-acct">
+                <${Avatar} from=${email} />
+                <div class="mail-acct-copy">
+                  <b>${email}</b>
+                  <div class="muted">MAILBOX</div>
                 </div>
               </div>
-              ${senderKeys.map((k) => {
-                const cnt = (packs[k] && packs[k].total) ? packs[k].total : senderCounts[k];
-                return html`
-                  <div class=${"mail-item" + (fromFilter === k ? " on" : "")} key=${k} onClick=${() => { put({ fromFilter: k }); put({ sel: -1 }); if (!packs[k]) loadSenderPage(k, false); }}>
-                    <${Avatar} from=${k} />
-                    <div class="mail-item-body">
-                      <b>${k}</b>
-                      <div class="mail-from"><span class="mail-chip tag-green">${cnt}</span></div>
+              <div class="side-label">MAILBOX</div>
+              <div class="side-nav">
+                ${FOLDERS.map(([id, label]) => html`
+                  <button type="button" class=${"nav-item" + (folder === id ? " on" : "")}
+                    onClick=${() => {
+                      put({
+                        folder: id, fromFilter: "", appliedQuery: "kind:email",
+                        packs: {}, picked: {}, mails: [], total: 0,
+                      });
+                      setQuery(""); setMore(false); put({ sel: -1 }); setSelAll(false);
+                      setTimeout(() => loadPage(false, { fromFilter: "" }), 0);
+                    }}>${label}</button>`)}
+              </div>
+              <div class="side-label" style=${{ marginTop: "14px" }}>SENDERS</div>
+              <div class="side-nav mail-senders">
+                <div class=${"mail-item" + (!fromFilter ? " on" : "")} onClick=${() => { put({ fromFilter: "" }); put({ sel: -1 }); }}>
+                  <div class="mail-item-body">
+                    <b>All senders</b>
+                    <div class="mail-from">
+                      <span class="mail-chip tag-green">Total messages: ${total || mails.length}</span>
+                      <span class="mail-chip tag-green">${senderKeys.length} senders</span>
                     </div>
-                  </div>`;
-              })}
+                  </div>
+                </div>
+                ${senderKeys.map((k) => {
+                  const cnt = (packs[k] && packs[k].total) ? packs[k].total : senderCounts[k];
+                  return html`
+                    <div class=${"mail-item" + (fromFilter === k ? " on" : "")} key=${k} onClick=${() => { put({ fromFilter: k }); put({ sel: -1 }); if (!packs[k]) loadSenderPage(k, false); }}>
+                      <${Avatar} from=${k} />
+                      <div class="mail-item-body">
+                        <b>${k}</b>
+                        <div class="mail-from"><span class="mail-chip tag-green">${cnt}</span></div>
+                      </div>
+                    </div>`;
+                })}
+              </div>
+              <div class="side-foot mail-actions">
+                <div class="side-label" style=${{ margin: "0 0 6px" }}>ACTIONS</div>
+                <label class="mail-check">
+                  <input type="checkbox" checked=${selAll} onClick=${(e) => {
+                    const on = e.target.checked;
+                    setSelAll(on);
+                    const p = {};
+                    if (on) activeList.forEach((m) => { if (m && m.id) p[m.id] = true; });
+                    put({ picked: p });
+                  }} /> Select all
+                </label>
+                <button class="secondary" type="button" onClick=${deletePicked}>Delete selected</button>
+                ${folder === "deleted" && html`<button class="secondary danger" type="button" onClick=${emptyDeleted}>Empty deleted</button>`}
+                <span class="muted">${Object.keys(picked || {}).length ? Object.keys(picked).length + " selected" : ""}</span>
+              </div>
             </div>
-            <div class="mail-list">
+            <div class="mail-listpane">
+              <div class="pane-head">
+                <span class="eyebrow">${fromFilter || (FOLDERS.find((f) => f[0] === folder) || ["", ""])[1]}</span>
+                <span class="count-pill">${total || mails.length} messages</span>
+              </div>
+              <div class="mail-search">
+                <input placeholder="Search mailbox" value=${query} onInput=${(e) => setQuery(e.target.value)}
+                  onKeyDown=${(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      const nq = (e.target.value || "").trim() || "kind:email";
+                      put({ appliedQuery: nq });
+                      loadPage(false);
+                    }
+                  }} />
+                <button class="secondary" type="button" onClick=${() => {
+                  const nq = q || "kind:email";
+                  put({ appliedQuery: nq });
+                  loadPage(false);
+                }}>Search</button>
+              </div>
+              <div class="mail-list">
               ${listErr && rows.length > 0 && html`
                 <div class="muted" style=${{ padding: "10px 14px", color: "var(--red)" }}>${listErr}</div>`}
               ${!rows.length && html`
@@ -650,26 +672,30 @@ export function MailViewer({ account, onClose }) {
                   </button>
                 </div>`}
             </div>
+            </div>
             <div class="mail-read">
               ${sel >= 0 && activeList[sel] ? html`
+                <div class="read-bar">
+                  <div class="btnbar">
+                    <button type="button" class="secondary danger" onClick=${() => deleteMailAt(sel)}>Delete</button>
+                  </div>
+                  <span class="muted">${displayFromEmail(activeList[sel].from)}</span>
+                </div>
                 <div class="mail-read-card">
-                  <div style=${{ display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "flex-start", flexWrap: "wrap" }}>
-                    <div style=${{ display: "flex", gap: "12px", alignItems: "flex-start", flex: 1, minWidth: 0 }}>
-                      <${Avatar} from=${activeList[sel].from} big=${true} />
-                      <div style=${{ minWidth: 0 }}>
-                        <h2 style=${{ margin: "0" }}>${activeList[sel].subject || "(no subject)"}</h2>
-                        <div class="mail-from" style=${{ marginTop: "8px" }}>
-                          ${activeList[sel].from && html`<span class="mail-chip tag-yellow">${displayFromEmail(activeList[sel].from)}</span>`}
-                          ${activeList[sel].date && html`<span class="mail-chip tag-blue">${formatMailDate(activeList[sel].date)}</span>`}
-                        </div>
+                  <div class="read-head">
+                    <${Avatar} from=${activeList[sel].from} big=${true} />
+                    <div class="read-copy">
+                      <h2>${activeList[sel].subject || "(no subject)"}</h2>
+                      <div class="read-meta">
+                        ${activeList[sel].from && html`<span class="mail-chip tag-yellow">${displayFromEmail(activeList[sel].from)}</span>`}
+                        ${activeList[sel].date && html`<span class="mail-chip tag-blue">${formatMailDate(activeList[sel].date)}</span>`}
                       </div>
                     </div>
-                    <button type="button" class="secondary danger" onClick=${() => deleteMailAt(sel)}>Delete</button>
                   </div>
                   <iframe class="mail-frame" ref=${frameRef} srcDoc=${readHtml || ""} onLoad=${onFrameLoad}
                     sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-presentation allow-forms"></iframe>
                 </div>`
-              : html`<div class="muted">Select a message</div>`}
+              : html`<div class="read-empty"><div class="muted">Select a message</div></div>`}
             </div>
           </div>
         </div>`}
@@ -727,8 +753,8 @@ export function MailViewer({ account, onClose }) {
           <div style="padding:18px">
             <p class="muted" style="margin:0">Use proxies for this mailbox login?</p>
             <div style=${{ display: "flex", gap: "10px", marginTop: "14px" }}>
-              <button type="button" onClick=${() => startMail(false)}>No</button>
-              <button class="secondary" type="button" onClick=${() => startMail(true)}>Yes</button>
+              <button type="button" class="ghost" onClick=${() => startMail(false)}>No</button>
+              <button class="primary" type="button" onClick=${() => startMail(true)}>Yes</button>
             </div>
           </div>
         </div>`}
@@ -791,7 +817,7 @@ export function MailViewer({ account, onClose }) {
                 </div>
               </div>`}
             <div style=${{ display: "flex", gap: "8px", marginTop: "14px" }}>
-              <button type="button" onClick=${pxGo}>Continue</button>
+              <button type="button" class="primary" onClick=${pxGo}>Continue</button>
               <button class="secondary" type="button" onClick=${() => setStage("ask")}>Cancel</button>
             </div>
           </div>
@@ -850,7 +876,7 @@ export function MailViewer({ account, onClose }) {
                   </div>`)}
               </div>`}
             <div class="conn-btns">
-              <button type="button" onClick=${runConnect}>Retry</button>
+              <button type="button" class="primary" onClick=${runConnect}>Retry</button>
               <button class="secondary" type="button" onClick=${() => { setStage("px"); loadPxLists(); }}>Change proxies</button>
             </div>
           </div>
