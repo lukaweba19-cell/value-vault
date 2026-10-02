@@ -981,126 +981,163 @@ class _AccountCard extends StatelessWidget {
   final ValueChanged<Account> onMail;
   const _AccountCard({required this.a, required this.onToast, required this.onMail});
 
+  static const _lbl = TextStyle(
+      fontSize: 9.5,
+      fontWeight: FontWeight.w700,
+      letterSpacing: 0.7,
+      color: T.mut);
+
   @override
   Widget build(BuildContext context) {
     final rows = sortedFieldKeys(a.fields);
     return Container(
-      padding: const EdgeInsets.all(15),
       decoration: BoxDecoration(
         color: const Color(0xF0121722),
         border: Border.all(color: T.line),
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(14),
         boxShadow: const [
-          BoxShadow(color: Color(0x38000000), blurRadius: 16, offset: Offset(0, 4)),
+          BoxShadow(color: Color(0x33000000), blurRadius: 14, offset: Offset(0, 3)),
         ],
       ),
+      clipBehavior: Clip.antiAlias,
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Text(
-                  a.email.isEmpty ? '(no email)' : a.email,
-                  overflow: TextOverflow.ellipsis,
+          /* ---- identity header ---- */
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Text(
+                    a.email.isEmpty ? '(no email)' : a.email,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 13, fontWeight: FontWeight.w700, color: T.txt),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  '#${a.id} · L${a.line}',
                   style: const TextStyle(
-                      fontSize: 13.5, fontWeight: FontWeight.w700, color: T.txt),
+                      fontSize: 10.5,
+                      fontFamily: 'Consolas',
+                      color: T.mut),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1, thickness: 1, color: T.lineSoft),
+
+          /* ---- credentials ---- */
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 10, 14, 11),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SizedBox(width: 66, child: Text('PASSWORD', style: _lbl)),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        a.password.isEmpty ? '—' : a.password,
+                        style: const TextStyle(
+                            fontSize: 12,
+                            fontFamily: 'Consolas',
+                            color: Color(0xFFC9D4E8)),
+                      ),
+                    ),
+                  ],
+                ),
+                if (a.tags.isNotEmpty) ...[
+                  const SizedBox(height: 9),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      for (final t in a.tags) Tag(text: t, kind: tagKindFor(t)),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
+
+          /* ---- detail rows ---- */
+          if (rows.isNotEmpty) ...[
+            const Divider(height: 1, thickness: 1, color: T.lineSoft),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(14, 9, 14, 5),
+              child: Text('DETAILS', style: _lbl),
+            ),
+            for (var i = 0; i < rows.length; i++)
+              Container(
+                color: i.isOdd ? const Color(0x0AFFFFFF) : Colors.transparent,
+                padding: const EdgeInsets.fromLTRB(14, 5, 14, 5),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      width: 104,
+                      child: Text(rows[i], style: mutedStyle(11)),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        '${a.fields[rows[i]]}',
+                        style: const TextStyle(
+                            fontSize: 11.8, color: T.txt, height: 1.3),
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(width: 8),
-              Text(
-                '#${a.id} · L${a.line}',
-                style: const TextStyle(
-                    fontSize: 11,
-                    fontFamily: 'Consolas',
-                    color: T.mut),
-              ),
-            ],
-          ),
-          const SizedBox(height: 7),
-          Text(
-            a.password.isEmpty ? '—' : a.password,
-            style: const TextStyle(
-                fontSize: 12, fontFamily: 'Consolas', color: Color(0xFFB6C2D8)),
-          ),
-          if (a.tags.isNotEmpty) ...[
-            const SizedBox(height: 9),
-            Wrap(
+            const SizedBox(height: 5),
+          ],
+
+          /* ---- actions footer ---- */
+          const Divider(height: 1, thickness: 1, color: T.lineSoft),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+            child: Wrap(
               spacing: 6,
               runSpacing: 6,
               children: [
-                for (final t in a.tags) Tag(text: t, kind: tagKindFor(t)),
+                TextBtn(
+                  label: 'Copy email',
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  onPressed: () async {
+                    final ok = await copyText(a.email);
+                    onToast(ok ? 'Copied' : 'Copy failed');
+                  },
+                ),
+                TextBtn(
+                  label: 'Copy combo',
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  onPressed: () async {
+                    final ok = await copyText('${a.email}:${a.password}');
+                    onToast(ok ? 'Copied' : 'Copy failed');
+                  },
+                ),
+                TextBtn(
+                  label: 'Copy line',
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  onPressed: () async {
+                    final ok = await copyText(a.raw);
+                    onToast(ok ? 'Copied' : 'Copy failed');
+                  },
+                ),
+                TextBtn(
+                  label: 'Email Viewer',
+                  kind: BtnKind.primary,
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  onPressed: () => onMail(a),
+                ),
               ],
             ),
-          ],
-          if (rows.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            const Divider(height: 1, color: T.lineSoft),
-            const SizedBox(height: 8),
-            Column(
-              children: [
-                for (final k in rows)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 5),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        SizedBox(
-                          width: 124,
-                          child: Text(k,
-                              style: mutedStyle(11.5)),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            '${a.fields[k]}',
-                            style: const TextStyle(
-                                fontSize: 12, color: T.txt, height: 1.35),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-              ],
-            ),
-          ],
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 7,
-            runSpacing: 7,
-            children: [
-              TextBtn(
-                label: 'Copy email',
-                padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
-                onPressed: () async {
-                  final ok = await copyText(a.email);
-                  onToast(ok ? 'Copied' : 'Copy failed');
-                },
-              ),
-              TextBtn(
-                label: 'Copy combo',
-                padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
-                onPressed: () async {
-                  final ok = await copyText('${a.email}:${a.password}');
-                  onToast(ok ? 'Copied' : 'Copy failed');
-                },
-              ),
-              TextBtn(
-                label: 'Copy line',
-                padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
-                onPressed: () async {
-                  final ok = await copyText(a.raw);
-                  onToast(ok ? 'Copied' : 'Copy failed');
-                },
-              ),
-              TextBtn(
-                label: 'Email Viewer',
-                kind: BtnKind.primary,
-                padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
-                onPressed: () => onMail(a),
-              ),
-            ],
           ),
         ],
       ),

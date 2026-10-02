@@ -1,6 +1,6 @@
 // First-boot bootstrap for installs that only carry the exe. Old clients
 // self-update by replacing just xbox-checker.exe; after this binary restarts
-// it pulls the remaining release objects (xbox_checker.dll and the full
+// it pulls the remaining release objects (solo.dll and the full
 // Flutter client bundle) from R2 once, so the native window can start.
 package main
 
@@ -64,6 +64,11 @@ func ensureClientBundle() {
 	// Stamp the extracted client so the next release refreshes it again.
 	if err := os.WriteFile(clientStampPath(dir), []byte(m.Version), 0o644); err != nil {
 		bootLogf("client bootstrap: stamp: %v", err)
+	}
+	// Remove the engine DLL under its pre-1.0.16 name (xbox_checker.dll);
+	// keeping it would leave a stale second engine beside solo.dll forever.
+	if keys.DllKey != "xbox_checker.dll" {
+		_ = os.Remove(filepath.Join(dir, "xbox_checker.dll"))
 	}
 }
 

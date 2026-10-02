@@ -9,7 +9,7 @@ import 'package:solo_checker/api.dart';
 void main() {
   final bridge = Platform.environment['SOLO_BRIDGE'];
   final skip = (bridge == null || bridge.isEmpty)
-      ? 'set SOLO_BRIDGE to a built xbox_checker shared library'
+      ? 'set SOLO_BRIDGE to a built solo shared library'
       : false;
 
   test('in-process engine answers /api/state over dart:ffi', skip: skip,

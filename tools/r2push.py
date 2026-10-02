@@ -21,7 +21,7 @@ import pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 EXE_PATH = ROOT / "dist-test" / "xbox-checker.exe"
-DLL_PATH = ROOT / "dist-test" / "xbox_checker.dll"
+DLL_PATH = ROOT / "dist-test" / "solo.dll"
 BUNDLE_PATH = ROOT / "dist-test" / "solo-checker-bundle.zip"
 MANIFEST_PATH = ROOT / "dist-test" / "manifest.json"
 

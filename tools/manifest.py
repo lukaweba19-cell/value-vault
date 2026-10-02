@@ -32,7 +32,7 @@ def main():
     ap = argparse.ArgumentParser(description="Write the update manifest for a built release.")
     ap.add_argument("--exe", default=str(ROOT / "dist-test" / "xbox-checker.exe"),
                     help="path to the built exe (default: dist-test/xbox-checker.exe)")
-    ap.add_argument("--dll", default=str(ROOT / "dist-test" / "xbox_checker.dll"),
+    ap.add_argument("--dll", default=str(ROOT / "dist-test" / "solo.dll"),
                     help="path to the FFI engine DLL (added to the manifest when present)")
     ap.add_argument("--bundle", default=str(ROOT / "dist-test" / "solo-checker-bundle.zip"),
                     help="path to the client bundle zip (added to the manifest when present)")

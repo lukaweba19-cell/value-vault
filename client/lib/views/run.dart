@@ -1,6 +1,7 @@
 // Dashboard: live run view (polls /api/state, stats, logs, hits) — port of
 // dash/run.mjs, including the stick-to-bottom log behavior.
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -25,6 +26,7 @@ class RunView extends StatefulWidget {
 
 class _RunViewState extends State<RunView> {
   Map<String, dynamic>? _snap;
+  String _fp = '';
   Timer? _poll;
   final _logsCtrl = ScrollController();
   final _hitsCtrl = ScrollController();
@@ -65,8 +67,20 @@ class _RunViewState extends State<RunView> {
   Future<void> _tick() async {
     final r = await Api.get('/api/state');
     if (!mounted || r.data is! Map) return;
+    final data = Map<String, dynamic>.from(r.data);
+    // Rebuild only when the snapshot actually changed: this poll used to
+    // setState every 1.2s, re-rendering the whole log/hit panes (and
+    // burning CPU) even when the engine sat idle.
+    String fp;
+    try {
+      fp = jsonEncode(data);
+    } catch (_) {
+      fp = data.toString();
+    }
+    if (fp == _fp) return;
+    _fp = fp;
     final prev = _logsCtrl.hasClients ? _logsCtrl.offset : 0.0;
-    setState(() => _snap = Map<String, dynamic>.from(r.data));
+    setState(() => _snap = data);
     if (_stickLogs) {
       _autoscroll(_logsCtrl, true);
     } else if (_logsCtrl.hasClients && prev > 0) {
@@ -155,7 +169,7 @@ class _RunViewState extends State<RunView> {
             physics: const NeverScrollableScrollPhysics(),
             crossAxisSpacing: 10,
             mainAxisSpacing: 10,
-            childAspectRatio: 2.4,
+            childAspectRatio: 3.0,
             children: tiles
                 .map((t) => Container(
                       padding: const EdgeInsets.fromLTRB(13, 11, 13, 11),

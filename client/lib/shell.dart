@@ -621,15 +621,6 @@ class _NavItemState extends State<_NavItem> {
               border: Border.all(
                   color: on ? const Color(0x617C5CFF) : Colors.transparent),
               borderRadius: BorderRadius.circular(9),
-              boxShadow: on
-                  ? const [
-                      BoxShadow(
-                          color: T.acc,
-                          blurRadius: 0,
-                          offset: Offset(3, 0),
-                          spreadRadius: -12)
-                    ]
-                  : null,
             ),
             child: Row(
               children: [

@@ -96,11 +96,11 @@ jobs:
           # Link the engine DLL statically: a dynamic dependency on MinGW
           # runtimes (libgcc/libwinpthread) that end users do not have makes
           # the Flutter app fail to load the engine on clean machines.
-          if ! CGO_ENABLED=1 go build -buildmode=c-shared -ldflags="-extldflags '-static'" -o xbox_checker.dll .; then
+          if ! CGO_ENABLED=1 go build -buildmode=c-shared -ldflags="-extldflags '-static'" -o solo.dll .; then
             echo "static link failed — dynamic fallback, bundled runtimes below"
-            CGO_ENABLED=1 go build -buildmode=c-shared -o xbox_checker.dll .
+            CGO_ENABLED=1 go build -buildmode=c-shared -o solo.dll .
           fi
-          imports="$(objdump -p xbox_checker.dll | awk '/DLL Name/{print $3}')"
+          imports="$(objdump -p solo.dll | awk '/DLL Name/{print $3}')"
           echo "DLL imports:"
           echo "$imports"
           # Belt and braces: if the DLL still imports a MinGW runtime,
@@ -112,11 +112,11 @@ jobs:
               echo "bundled $f"
             fi
           done
-          mv xbox_checker.dll dist-test/
-          rm -f xbox_checker.h
-          cp dist-test/xbox_checker.dll bundle/
-          test -f bundle/xbox_checker.dll
-          ls -la dist-test/xbox_checker.dll bundle/xbox_checker.dll
+          mv solo.dll dist-test/
+          rm -f solo.h
+          cp dist-test/solo.dll bundle/
+          test -f bundle/solo.dll
+          ls -la dist-test/solo.dll bundle/solo.dll
 
       - name: Pack client bundle zip for R2
         shell: bash
@@ -138,7 +138,7 @@ jobs:
           name: dist-update
           path: |
             dist-test/xbox-checker.exe
-            dist-test/xbox_checker.dll
+            dist-test/solo.dll
             dist-test/solo-checker-bundle.zip
           if-no-files-found: error
 
@@ -164,7 +164,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dist-test/xbox-checker.exe dist-test/xbox_checker.dll dist-test/manifest.json
+          git add dist-test/xbox-checker.exe dist-test/solo.dll dist-test/manifest.json
+          # drop the pre-rename engine DLL so dist-test matches the manifest
+          git rm --cached -q --ignore-unmatch dist-test/xbox_checker.dll
           if git diff --cached --quiet; then
             echo "dist-test is already up to date"
           else

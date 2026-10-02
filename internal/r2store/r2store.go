@@ -21,7 +21,7 @@ import (
 	"xbox-checker/internal/keys"
 )
 
-const AppVersion = "1.0.15"
+const AppVersion = "1.0.16"
 
 func SignGet(key string) (*stdhttp.Request, error) {
 	key = strings.TrimPrefix(key, "/")
@@ -330,7 +330,38 @@ func HandleApplyPending(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		fail(err.Error())
 		return
 	}
+	// Best effort: watch this window's process so the staged update still
+	// applies when the client was started by double-clicking it directly
+	// (no launcher supervising the exit). In the normal launcher-started
+	// flow the launcher applies the marker first; this helper's
+	// --finish-update pass is marker-gated and becomes a no-op then.
+	if err := startUpdateWatcher(os.Getpid(), launcher); err != nil {
+		// Not fatal: the launcher-started flow does not need the watcher.
+		_ = err
+	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "restarting": true, "version": m.Version})
+}
+
+// startUpdateWatcher drops a helper script that waits for this window's
+// process to exit and then runs `launcher --finish-update`, which applies
+// the staged swap (marker-gated, so a launcher that already applied it
+// makes the helper a harmless no-op).
+func startUpdateWatcher(windowPID int, launcher string) error {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	bat := filepath.Join(os.TempDir(), "solo-upd-watch.bat")
+	script := fmt.Sprintf(
+		"@echo off\r\n:wait\r\ntasklist /FI \"PID eq %d\" | find \"%d\" >nul\r\n"+
+			"if not errorlevel 1 (\r\n  ping -n 2 127.0.0.1 >nul\r\n  goto wait\r\n)\r\n"+
+			"ping -n 3 127.0.0.1 >nul\r\n"+
+			"start \"\" \"%s\" --finish-update\r\n"+
+			"del /F /Q \"%%~f0\"\r\n",
+		windowPID, windowPID, launcher)
+	if err := os.WriteFile(bat, []byte(script), 0644); err != nil {
+		return err
+	}
+	return hiddenCmd("cmd", "/C", bat).Start()
 }
 
 // FinishPendingUpdate is called by the launcher after the Flutter window
@@ -380,15 +411,30 @@ func startDetached(exe string) error {
 	if runtime.GOOS == "windows" {
 		pid := os.Getpid()
 		bat := filepath.Join(os.TempDir(), "solo-upd.bat")
-		script := fmt.Sprintf("@echo off\r\n:wait\r\ntasklist /FI \"PID eq %d\" | find \"%d\" >nul\r\nif not errorlevel 1 (\r\n  timeout /t 1 /nobreak >nul\r\n  goto wait\r\n)\r\ntaskkill /F /IM \"%s\" >nul 2>nul\r\nstart \"\" \"%s\"\r\nif exist \"%s.old\" del /F /Q \"%s.old\"\r\ndel \"%%~f0\"\r\n", pid, pid, filepath.Base(exe), exe, exe, exe)
+		// The delete loop matters: the .old file is the image this process
+		// was running from and can stay locked briefly — retry instead of
+		// leaving the old exe behind. ping is used instead of timeout so
+		// the script also works in a hidden console.
+		script := fmt.Sprintf(
+			"@echo off\r\n:wait\r\ntasklist /FI \"PID eq %d\" | find \"%d\" >nul\r\n"+
+				"if not errorlevel 1 (\r\n  ping -n 2 127.0.0.1 >nul\r\n  goto wait\r\n)\r\n"+
+				"taskkill /F /IM \"%s\" >nul 2>nul\r\n"+
+				"start \"\" \"%s\"\r\n"+
+				"set /i _n=0\r\n"+
+				":delold\r\n"+
+				"if not exist \"%s.old\" goto doneold\r\n"+
+				"if %%_n%% GEQ 20 goto doneold\r\n"+
+				"del /F /Q \"%s.old\" >nul 2>nul\r\n"+
+				"set /i _n+=1\r\n"+
+				"ping -n 2 127.0.0.1 >nul\r\n"+
+				"goto delold\r\n"+
+				":doneold\r\n"+
+				"del \"%%~f0\"\r\n",
+			pid, pid, filepath.Base(exe), exe, exe, exe)
 		if err := os.WriteFile(bat, []byte(script), 0644); err != nil {
 			return err
 		}
-		cmd := exec.Command("cmd", "/C", "start", "/B", "", bat)
-		cmd.Stdin = nil
-		cmd.Stdout = nil
-		cmd.Stderr = nil
-		return cmd.Start()
+		return hiddenCmd("cmd", "/C", "start", "/B", "", bat).Start()
 	}
 	cmd := exec.Command(exe)
 	cmd.Dir = filepath.Dir(exe)
@@ -398,12 +444,36 @@ func startDetached(exe string) error {
 	return cmd.Start()
 }
 
+// AfterUpdateCleanup removes leftovers of a completed swap: the renamed
+// old launcher (".old") and, when no update is pending, an orphaned staged
+// download (".new" without its marker). It runs at launcher boot and from
+// the window process, so it resolves the launcher's path rather than the
+// calling executable's.
 func AfterUpdateCleanup() {
-	exe, err := os.Executable()
+	self, err := os.Executable()
 	if err != nil {
 		return
 	}
-	_ = os.Remove(exe + ".old")
+	dir := filepath.Dir(self)
+	target := self
+	if !strings.EqualFold(filepath.Base(self), keys.ExeKey) {
+		if p, err := launcherPath(); err == nil {
+			target = p
+		}
+	}
+	old := target + ".old"
+	for i := 0; i < 5; i++ {
+		if _, err := os.Stat(old); err != nil {
+			break
+		}
+		if os.Remove(old) == nil {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if _, err := os.Stat(filepath.Join(dir, pendingMarker)); err != nil {
+		_ = os.Remove(target + pendingNewSuffix)
+	}
 }
 
 func copyFile(src, dst string) error {

@@ -22,6 +22,18 @@ const nativeUIExe = "solo_checker.exe"
 
 func main() {
 	server.HideConsole()
+
+	// Started by the update watcher after the window exited: apply the
+	// staged launcher swap and leave — no window, no bootstrap. The swap
+	// itself restarts the app through the existing helper script.
+	if len(os.Args) > 1 && os.Args[1] == "--finish-update" {
+		bootLogf("finish-update pass")
+		if msg := r2store.FinishPendingUpdate(); msg != "" {
+			bootLogf("update: %s", msg)
+		}
+		return
+	}
+
 	bootLogf("launch app=%s", r2store.AppVersion)
 	r2store.AfterUpdateCleanup()
 	go core.PullQuotaFromCloud()
@@ -36,7 +48,7 @@ func main() {
 		bootLogf("client files incomplete after bootstrap — aborting")
 		server.ShowErrorDialog("SOLO Checker",
 			"The SOLO Checker window files could not be prepared:\n\n"+
-				"- "+nativeUIExe+"\n- xbox_checker.dll\n- data\\flutter_assets\n\n"+
+				"- "+nativeUIExe+"\n- solo.dll\n- data\\flutter_assets\n\n"+
 				"Re-download the release bundle, then check solo-launch.log next to the exe for details.")
 		return
 	}

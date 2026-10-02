@@ -1,5 +1,5 @@
 // dart:ffi transport for the Go engine. The Flutter app and the checker
-// engine share ONE process: xbox_checker.dll is loaded directly and every
+// engine share ONE process: solo.dll is loaded directly and every
 // route runs in-process — no sockets, no HTTP, no second process.
 //
 // Streaming routes (SSE editor runs, NDJSON mail connect, viewer events)
@@ -61,9 +61,9 @@ DynamicLibrary _lib() {
   if (override != null && override.isNotEmpty) {
     _libCache = DynamicLibrary.open(override);
   } else if (Platform.isWindows) {
-    _libCache = DynamicLibrary.open('xbox_checker.dll');
+    _libCache = DynamicLibrary.open('solo.dll');
   } else {
-    _libCache = DynamicLibrary.open('xbox_checker.so');
+    _libCache = DynamicLibrary.open('solo.so');
   }
   return _libCache!;
 }
@@ -196,7 +196,7 @@ class Api {
       {String base = apiBase}) async {
     final out = StreamController<Map<String, dynamic>>();
     final buf = StringBuffer();
-    _openStream('GET', path, '').listen((chunk) {
+    final sub = _openStream('GET', path, '').listen((chunk) {
       buf.write(chunk);
       var s = buf.toString();
       var idx = s.indexOf('\n\n');
@@ -217,6 +217,13 @@ class Api {
         ..clear()
         ..write(s);
     }, onDone: out.close, onError: (_) => out.close());
+    // When the view stops listening mid-stream (editor closed, run
+    // cancelled), tear the Go-side stream down too — otherwise the engine
+    // keeps producing frames nobody consumes.
+    out.onCancel = () {
+      buf.clear();
+      sub.cancel();
+    };
     return out.stream;
   }
 
@@ -225,7 +232,7 @@ class Api {
       Map<String, dynamic> body, {String base = apiBase}) async {
     final out = StreamController<Map<String, dynamic>>();
     final buf = StringBuffer();
-    _openStream('POST', path, jsonEncode(body)).listen((chunk) {
+    final sub = _openStream('POST', path, jsonEncode(body)).listen((chunk) {
       buf.write(chunk);
       var s = buf.toString();
       var nl = s.indexOf('\n');
@@ -244,6 +251,12 @@ class Api {
         ..clear()
         ..write(s);
     }, onDone: out.close, onError: (_) => out.close());
+    // Same teardown as sse(): a cancelled mail connect must stop the
+    // engine's proxy loop, not just the UI's `await for`.
+    out.onCancel = () {
+      buf.clear();
+      sub.cancel();
+    };
     return out.stream;
   }
 

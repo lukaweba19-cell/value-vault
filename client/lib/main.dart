@@ -23,7 +23,7 @@ void main() {
     String? err;
     if (gotIt) {
       try {
-        // Load the Go engine (xbox_checker.dll sits next to this exe).
+        // Load the Go engine (solo.dll sits next to this exe).
         err = await FfiBackend.start();
       } catch (e) {
         err = 'Failed to start engine: $e';
@@ -151,7 +151,7 @@ class _BootGateState extends State<BootGate> {
               if (_failed) ...[
                 const SizedBox(height: 6),
                 MutedSmall(widget.bootError ??
-                    'xbox_checker.dll could not be loaded — reinstall the app.'),
+                    'solo.dll could not be loaded — reinstall the app.'),
                 const SizedBox(height: 16),
                 TextButton(
                   onPressed: () {

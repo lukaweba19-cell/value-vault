@@ -45,7 +45,9 @@ class HomeView extends StatelessWidget {
             physics: const NeverScrollableScrollPhysics(),
             crossAxisSpacing: 12,
             mainAxisSpacing: 12,
-            childAspectRatio: cols == 1 ? 3.2 : 1.55,
+            // Sized to the card's content (~150px) so the cards stop
+            // carrying a large empty bottom half.
+            childAspectRatio: cols == 1 ? 3.4 : 2.2,
             children: [
               ChoiceCard(
                 icon: const IcoBox(child: IconNew(size: 18)),
@@ -108,7 +110,7 @@ class HomeView extends StatelessWidget {
             physics: const NeverScrollableScrollPhysics(),
             crossAxisSpacing: 12,
             mainAxisSpacing: 12,
-            childAspectRatio: cols == 1 ? 3.2 : 2.6,
+            childAspectRatio: cols == 1 ? 3.4 : 3.2,
             children: [
               ChoiceCard(
                 icon: const IcoBox(tg: true, child: TgMark(size: 42, gid: 'tgA')),
