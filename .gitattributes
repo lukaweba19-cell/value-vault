@@ -1,0 +1,14 @@
+# Normalize line endings: Go tooling (gofmt) requires LF on every platform,
+# and the Windows CI runners default to CRLF checkouts without this.
+* text=auto eol=lf
+
+# Explicitly binary files
+*.exe binary
+*.dll binary
+*.so binary
+*.syso binary
+*.ico binary
+*.png binary
+*.jpg binary
+*.zip binary
+*.gz binary
