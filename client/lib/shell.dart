@@ -754,11 +754,15 @@ class _UpdateCheckState extends State<UpdateCheck> {
             : (r.text.isEmpty ? 'update failed' : r.text);
       });
     } else {
-      setState(() => _err = 'Restarting…');
+      final restarting = r.data is Map && r.data['restarting'] != false;
+      setState(() => _err =
+          restarting ? 'Restarting…' : 'Installed — reopen the app once.');
       refresh();
-      // The launcher swaps itself for the downloaded exe and restarts the
-      // app once this window exits — get out of its way.
-      Future.delayed(const Duration(milliseconds: 500), () => exit(0));
+      if (restarting) {
+        // The swap is already done; the restart script takes over the
+        // moment this window exits.
+        Future.delayed(const Duration(milliseconds: 500), () => exit(0));
+      }
     }
     refresh();
   }

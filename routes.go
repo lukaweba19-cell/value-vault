@@ -14,9 +14,9 @@ import (
 )
 
 // newFFIMux is the single route table the Flutter app calls in-process over
-// dart:ffi — the union of both listeners. Update check is read-only and
-// update apply is the staged variant (downloads the new launcher and hands
-// the swap to it); the in-process UI never replaces its own host executable.
+// dart:ffi — the union of both listeners. Update check is read-only; update
+// apply swaps the *launcher* beside the window (never the running window
+// itself) and restarts through a script that fires when the window exits.
 func newFFIMux() *stdhttp.ServeMux {
 	mux := newBaseMux()
 	mux.HandleFunc("/api/update/check", r2store.HandleCheck)

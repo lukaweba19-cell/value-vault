@@ -21,7 +21,7 @@ import (
 	"xbox-checker/internal/keys"
 )
 
-const AppVersion = "1.0.17"
+const AppVersion = "1.0.18"
 
 func SignGet(key string) (*stdhttp.Request, error) {
 	key = strings.TrimPrefix(key, "/")
@@ -258,8 +258,9 @@ func HandleApply(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	}()
 }
 
-// Staged-update files beside the launcher: HandleApplyPending writes them,
-// FinishPendingUpdate consumes them once the Flutter window has exited.
+// Legacy staging-file names from ≤1.0.17. The current apply flow swaps the
+// launcher in one shot and never creates these — they are only swept by
+// AfterUpdateCleanup so old installs stop littering the folder.
 const (
 	pendingNewSuffix = ".new"
 	pendingMarker    = "solo-update.pending"
@@ -284,11 +285,12 @@ func launcherPath() (string, error) {
 	return p, nil
 }
 
-// HandleApplyPending is the in-process (dart:ffi) variant of HandleApply.
-// The DLL's host process must never replace its own running executable, so
-// this only downloads the new launcher next to the current one and drops a
-// marker file; the launcher swaps itself (FinishPendingUpdate) after the
-// Flutter window exits, then restarts and bootstraps the new client files.
+// HandleApplyPending is the in-process (dart:ffi) update apply. It follows
+// the simple self-update model: download the new launcher, rename the
+// running one aside, write the new bytes in its place, then drop a small
+// script that starts the new launcher and deletes the old file once this
+// window exits. No .new/.pending staging files are ever created — every
+// failure path restores the rename before returning.
 func HandleApplyPending(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	fail := func(msg string) {
@@ -319,112 +321,58 @@ func HandleApplyPending(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		fail("sha256 mismatch got " + got)
 		return
 	}
-	newExe := launcher + pendingNewSuffix
-	if err := os.WriteFile(newExe, raw, 0755); err != nil {
-		fail(err.Error())
+	// Swap: renaming a running image is allowed on Windows; after the
+	// rename the path is free for the new bytes.
+	old := launcher + ".old"
+	_ = os.Remove(old)
+	if err := os.Rename(launcher, old); err != nil {
+		fail("could not move the current launcher aside: " + err.Error())
 		return
 	}
-	marker := filepath.Join(filepath.Dir(launcher), pendingMarker)
-	if err := os.WriteFile(marker, []byte(m.Version), 0644); err != nil {
-		_ = os.Remove(newExe)
-		fail(err.Error())
+	if err := os.WriteFile(launcher, raw, 0755); err != nil {
+		_ = os.Rename(old, launcher) // restore — leave nothing behind
+		fail("could not write the new launcher: " + err.Error())
 		return
 	}
-	// Best effort: watch this window's process so the staged update still
-	// applies when the client was started by double-clicking it directly
-	// (no launcher supervising the exit). In the normal launcher-started
-	// flow the launcher applies the marker first; this helper's
-	// --finish-update pass is marker-gated and becomes a no-op then.
-	if err := startUpdateWatcher(os.Getpid(), launcher); err != nil {
-		// Not fatal: the launcher-started flow does not need the watcher.
-		_ = err
+	// Restart script: waits for this window to exit, starts the new
+	// launcher and deletes the old image (retrying while it winds down).
+	restarting := true
+	if err := startRestartBat(os.Getpid(), launcher); err != nil {
+		// The swap itself succeeded; the new launcher runs from the next
+		// manual start and AfterUpdateCleanup removes the .old file.
+		restarting = false
 	}
-	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "restarting": true, "version": m.Version})
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "restarting": restarting, "version": m.Version})
 }
 
-// startUpdateWatcher drops a helper script that waits for this window's
-// process to exit and then runs `launcher --finish-update`, which applies
-// the staged swap (marker-gated, so a launcher that already applied it
-// makes the helper a harmless no-op).
-func startUpdateWatcher(windowPID int, launcher string) error {
+// startRestartBat drops the post-exit script: wait for the window process
+// to die, start the (already swapped) launcher, delete the old image with
+// a bounded retry loop, then delete itself.
+func startRestartBat(windowPID int, launcher string) error {
 	if runtime.GOOS != "windows" {
 		return nil
 	}
-	bat := filepath.Join(os.TempDir(), "solo-upd-watch.bat")
+	bat := filepath.Join(os.TempDir(), "solo-restart.bat")
 	script := fmt.Sprintf(
 		"@echo off\r\n:wait\r\ntasklist /FI \"PID eq %d\" | find \"%d\" >nul\r\n"+
 			"if not errorlevel 1 (\r\n  ping -n 2 127.0.0.1 >nul\r\n  goto wait\r\n)\r\n"+
-			"ping -n 3 127.0.0.1 >nul\r\n"+
-			"start \"\" \"%s\" --finish-update\r\n"+
+			"ping -n 2 127.0.0.1 >nul\r\n"+
+			"start \"\" \"%s\"\r\n"+
+			"set /i _n=0\r\n"+
+			":delold\r\n"+
+			"if not exist \"%s.old\" goto doneold\r\n"+
+			"if %%_n%% GEQ 30 goto doneold\r\n"+
+			"del /F /Q \"%s.old\" >nul 2>nul\r\n"+
+			"set /i _n+=1\r\n"+
+			"ping -n 2 127.0.0.1 >nul\r\n"+
+			"goto delold\r\n"+
+			":doneold\r\n"+
 			"del /F /Q \"%%~f0\"\r\n",
-		windowPID, windowPID, launcher)
+		windowPID, windowPID, launcher, launcher, launcher)
 	if err := os.WriteFile(bat, []byte(script), 0644); err != nil {
 		return err
 	}
 	return hiddenCmd("cmd", "/C", bat).Start()
-}
-
-// FinishPendingUpdate is called by the launcher after the Flutter window
-// exits. When a staged update marker is present it swaps the launcher for
-// the downloaded one and starts it detached (the helper script waits for
-// this process to exit first). Returns a log message when work was done,
-// or "" when there is nothing to apply.
-func FinishPendingUpdate() string {
-	self, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	dir := filepath.Dir(self)
-	marker := filepath.Join(dir, pendingMarker)
-	if _, err := os.Stat(marker); err != nil {
-		return ""
-	}
-	if !strings.EqualFold(filepath.Base(self), keys.ExeKey) {
-		return "" // leave the marker for the real launcher
-	}
-	newExe := findStagedNew(dir)
-	if newExe == "" {
-		_ = os.Remove(marker)
-		return "staged update missing"
-	}
-	raw, err := os.ReadFile(newExe)
-	if err != nil {
-		_ = os.Remove(marker)
-		return "staged update missing: " + err.Error()
-	}
-	old := self + ".old"
-	_ = os.Remove(old)
-	if err := os.Rename(self, old); err != nil {
-		_ = os.Remove(marker)
-		return "could not move running exe aside: " + err.Error()
-	}
-	if err := os.WriteFile(self, raw, 0755); err != nil {
-		_ = os.Rename(old, self)
-		_ = os.Remove(marker)
-		return "could not write new exe: " + err.Error()
-	}
-	_ = os.Remove(newExe)
-	_ = os.Remove(marker)
-	if err := startDetached(self); err != nil {
-		return "update written but restart failed (start it manually): " + err.Error()
-	}
-	return "launcher swapped; restarting"
-}
-
-// findStagedNew locates the downloaded launcher. The staged name depends
-// on which client staged it: the current helper.exe.new, or the
-// pre-1.0.17 xbox-checker.exe.new written by an older build.
-func findStagedNew(dir string) string {
-	for _, n := range []string{
-		keys.ExeKey + pendingNewSuffix,
-		"xbox-checker.exe" + pendingNewSuffix,
-	} {
-		p := filepath.Join(dir, n)
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	return ""
 }
 
 func startDetached(exe string) error {
@@ -464,11 +412,12 @@ func startDetached(exe string) error {
 	return cmd.Start()
 }
 
-// AfterUpdateCleanup removes leftovers of a completed swap: the renamed
-// old launcher (".old") and, when no update is pending, an orphaned staged
-// download (".new" without its marker). It runs at launcher boot and from
-// the window process, so it resolves the launcher's path rather than the
-// calling executable's.
+// AfterUpdateCleanup removes update leftovers at every boot: the renamed
+// old launcher (".old", locked for a moment while the old process winds
+// down) plus any legacy staging files from ≤1.0.17 (".new" downloads and
+// the "solo-update.pending" marker — the current flow never creates
+// them). It runs at launcher boot and from the window process, so it
+// resolves the launcher's path rather than the calling executable's.
 func AfterUpdateCleanup() {
 	self, err := os.Executable()
 	if err != nil {
@@ -481,11 +430,13 @@ func AfterUpdateCleanup() {
 			target = p
 		}
 	}
-	old := target + ".old"
-	legacyOld := filepath.Join(dir, "xbox-checker.exe.old") // pre-1.0.17 name
+	olds := []string{
+		target + ".old",
+		filepath.Join(dir, "xbox-checker.exe.old"), // pre-1.0.17 launcher name
+	}
 	for i := 0; i < 5; i++ {
 		removed := true
-		for _, n := range []string{old, legacyOld} {
+		for _, n := range olds {
 			if _, err := os.Stat(n); err != nil {
 				continue
 			}
@@ -498,10 +449,13 @@ func AfterUpdateCleanup() {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	if _, err := os.Stat(filepath.Join(dir, pendingMarker)); err != nil {
-		if n := findStagedNew(dir); n != "" {
-			_ = os.Remove(n)
-		}
+	// Legacy staging litter (≤1.0.17): never valid in the current flow.
+	for _, n := range []string{
+		filepath.Join(dir, keys.ExeKey+pendingNewSuffix),
+		filepath.Join(dir, "xbox-checker.exe"+pendingNewSuffix),
+		filepath.Join(dir, pendingMarker),
+	} {
+		_ = os.Remove(n)
 	}
 }
 

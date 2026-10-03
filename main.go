@@ -67,17 +67,6 @@ func main() {
 		return
 	}
 
-	// Started by the update watcher after the window exited: apply the
-	// staged launcher swap and leave — no window, no bootstrap. The swap
-	// itself restarts the app through the existing helper script.
-	if len(os.Args) > 1 && os.Args[1] == "--finish-update" {
-		bootLogf("finish-update pass")
-		if msg := r2store.FinishPendingUpdate(); msg != "" {
-			bootLogf("update: %s", msg)
-		}
-		return
-	}
-
 	bootLogf("launch app=%s", r2store.AppVersion)
 	r2store.AfterUpdateCleanup()
 	go core.PullQuotaFromCloud()
@@ -121,12 +110,9 @@ func main() {
 	if cmd.ProcessState != nil {
 		bootLogf("window exited with code %d", cmd.ProcessState.ExitCode())
 	}
-
-	// The update prompt inside the window stages the new launcher and exits;
-	// swap it in now that the window is gone, then restart via the helper.
-	if msg := r2store.FinishPendingUpdate(); msg != "" {
-		bootLogf("update: %s", msg)
-	}
+	// Updates swap the launcher while the window is still open (the apply
+	// handler renames it aside and writes the new bytes) and restart through
+	// a script that fires when the window exits — nothing to do here.
 }
 
 // nativeUIPath returns the path of the bundled native client, if present.
