@@ -4,7 +4,9 @@ project(solo_checker LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
-set(BINARY_NAME "solo_checker")
+# NOTE: this is the app's public file name ("xbox-checker.exe"); the small
+# Go helper beside it is helper.exe — see main.go (nativeUIExe).
+set(BINARY_NAME "xbox-checker")
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.

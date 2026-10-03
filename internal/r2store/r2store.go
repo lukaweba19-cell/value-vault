@@ -21,7 +21,7 @@ import (
 	"xbox-checker/internal/keys"
 )
 
-const AppVersion = "1.0.16"
+const AppVersion = "1.0.17"
 
 func SignGet(key string) (*stdhttp.Request, error) {
 	key = strings.TrimPrefix(key, "/")
@@ -266,7 +266,7 @@ const (
 )
 
 // launcherPath resolves the launcher executable (the file the standalone
-// flow replaces). Inside the Flutter host process (solo_checker.exe, which
+// flow replaces). Inside the Flutter host process (the window exe, which
 // loads this code as a DLL) os.Executable() points at the client, so the
 // launcher sits beside it.
 func launcherPath() (string, error) {
@@ -382,7 +382,11 @@ func FinishPendingUpdate() string {
 	if !strings.EqualFold(filepath.Base(self), keys.ExeKey) {
 		return "" // leave the marker for the real launcher
 	}
-	newExe := self + pendingNewSuffix
+	newExe := findStagedNew(dir)
+	if newExe == "" {
+		_ = os.Remove(marker)
+		return "staged update missing"
+	}
 	raw, err := os.ReadFile(newExe)
 	if err != nil {
 		_ = os.Remove(marker)
@@ -405,6 +409,22 @@ func FinishPendingUpdate() string {
 		return "update written but restart failed (start it manually): " + err.Error()
 	}
 	return "launcher swapped; restarting"
+}
+
+// findStagedNew locates the downloaded launcher. The staged name depends
+// on which client staged it: the current helper.exe.new, or the
+// pre-1.0.17 xbox-checker.exe.new written by an older build.
+func findStagedNew(dir string) string {
+	for _, n := range []string{
+		keys.ExeKey + pendingNewSuffix,
+		"xbox-checker.exe" + pendingNewSuffix,
+	} {
+		p := filepath.Join(dir, n)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
 }
 
 func startDetached(exe string) error {
@@ -462,17 +482,26 @@ func AfterUpdateCleanup() {
 		}
 	}
 	old := target + ".old"
+	legacyOld := filepath.Join(dir, "xbox-checker.exe.old") // pre-1.0.17 name
 	for i := 0; i < 5; i++ {
-		if _, err := os.Stat(old); err != nil {
-			break
+		removed := true
+		for _, n := range []string{old, legacyOld} {
+			if _, err := os.Stat(n); err != nil {
+				continue
+			}
+			if os.Remove(n) != nil {
+				removed = false
+			}
 		}
-		if os.Remove(old) == nil {
+		if removed {
 			break
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 	if _, err := os.Stat(filepath.Join(dir, pendingMarker)); err != nil {
-		_ = os.Remove(target + pendingNewSuffix)
+		if n := findStagedNew(dir); n != "" {
+			_ = os.Remove(n)
+		}
 	}
 }
 

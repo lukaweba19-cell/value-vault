@@ -70,6 +70,13 @@ func ensureClientBundle() {
 	if keys.DllKey != "xbox_checker.dll" {
 		_ = os.Remove(filepath.Join(dir, "xbox_checker.dll"))
 	}
+	// The window now lives at nativeUIExe; drop the pre-1.0.17 copy (it can
+	// only be removed once it is not running — failures are ignored).
+	if legacyUIExe != nativeUIExe {
+		if _, err := os.Stat(filepath.Join(dir, nativeUIExe)); err == nil {
+			_ = os.Remove(filepath.Join(dir, legacyUIExe))
+		}
+	}
 }
 
 // clientStampPath is the version marker written after a successful client
@@ -98,10 +105,20 @@ func clientFilesReady() bool {
 	if dir == "" {
 		return false
 	}
-	for _, n := range []string{nativeUIExe, keys.DllKey} {
-		if _, err := os.Stat(filepath.Join(dir, n)); err != nil {
-			return false
+	// Window: accept the current name or the pre-1.0.17 one — an install
+	// updated while offline still has a working window under the old name.
+	window := false
+	for _, n := range []string{nativeUIExe, legacyUIExe} {
+		if _, err := os.Stat(filepath.Join(dir, n)); err == nil {
+			window = true
+			break
 		}
+	}
+	if !window {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(dir, keys.DllKey)); err != nil {
+		return false
 	}
 	if _, err := os.Stat(filepath.Join(dir, "data", "flutter_assets")); err != nil {
 		return false
@@ -128,8 +145,10 @@ func extractBundle(raw []byte, dir string) error {
 	}
 	self, _ := os.Executable()
 	skipNames := map[string]bool{
+		// The running file only: after the launcher rename this is
+		// helper.exe, so the extracted window (xbox-checker.exe) always
+		// lands and the launcher never overwrites itself.
 		filepath.Base(filepath.Clean(self)): true,
-		"xbox-checker.exe":                  true, // may equal self; never overwrite
 	}
 	extracted := 0
 	for _, f := range zr.File {

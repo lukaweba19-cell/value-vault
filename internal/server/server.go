@@ -480,7 +480,7 @@ func HandlePickSave(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 // status line for stray requests.
 func HandleRoot(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, _ = w.Write([]byte("SOLO Checker backend running — UI: solo_checker.exe (Flutter)\n"))
+	_, _ = w.Write([]byte("SOLO Checker backend running — UI: xbox-checker.exe (Flutter)\n"))
 }
 
 func WindowsSaveFile(title string, names ...string) string {

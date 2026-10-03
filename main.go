@@ -1,27 +1,71 @@
 // Command xbox-checker is the SOLO Checker desktop app. This file is only
-// wiring: the launcher prepares the native client files and follows the
-// Flutter window's lifetime. There is no HTTP server, no listener and no
-// port anywhere in this process — the Flutter UI talks to the Go engine
-// in-process over dart:ffi.
+// wiring: helper.exe (this binary) prepares the native client files and
+// follows the Flutter window's lifetime. There is no HTTP server, no
+// listener and no port anywhere in this process — the Flutter UI talks to
+// the Go engine in-process over dart:ffi.
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"xbox-checker/internal/core"
+	"xbox-checker/internal/keys"
 	"xbox-checker/internal/r2store"
 	"xbox-checker/internal/server"
 )
 
 // nativeUIExe is the Flutter client that sits next to this executable in a
-// native install.
-const nativeUIExe = "solo_checker.exe"
+// native install. It carries the app's public name; this launcher is the
+// inconspicuous helper beside it.
+const nativeUIExe = "xbox-checker.exe"
+
+// legacyUIExe is the window's pre-1.0.17 name. It is still honoured as a
+// fallback so installs that update while offline keep a launchable window.
+const legacyUIExe = "solo_checker.exe"
+
+// ensureLauncherName keeps this launcher at its canonical path (helper.exe).
+// Installations updated from ≤1.0.16 carry the launcher at
+// xbox-checker.exe — which from 1.0.17 on is the *window's* name — so
+// running from there would make main() spawn itself. Windows allows
+// renaming a running image, so relocate first; the old path is then free
+// for the bundle extraction to place the window.
+func ensureLauncherName() error {
+	self, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	base := filepath.Base(self)
+	if strings.EqualFold(base, keys.ExeKey) {
+		return nil
+	}
+	if !strings.EqualFold(base, nativeUIExe) {
+		return nil // dev layout (e.g. `go run`) — leave it alone
+	}
+	dst := filepath.Join(filepath.Dir(self), keys.ExeKey)
+	_ = os.Remove(dst) // stale canonical copy; we are the running image
+	if err := os.Rename(self, dst); err != nil {
+		return fmt.Errorf("could not rename %s to %s: %w", base, keys.ExeKey, err)
+	}
+	bootLogf("launcher relocated: %s -> %s", base, keys.ExeKey)
+	return nil
+}
 
 func main() {
 	server.HideConsole()
+
+	if err := ensureLauncherName(); err != nil {
+		bootLogf("launcher rename failed: %v", err)
+		server.ShowErrorDialog("SOLO Checker",
+			"The launcher file could not be prepared:\n\n"+err.Error()+
+				"\n\nClose every SOLO Checker window and delete "+nativeUIExe+
+				", then start "+keys.ExeKey+" — or re-download the release bundle.")
+		return
+	}
 
 	// Started by the update watcher after the window exited: apply the
 	// staged launcher swap and leave — no window, no bootstrap. The swap
@@ -86,14 +130,19 @@ func main() {
 }
 
 // nativeUIPath returns the path of the bundled native client, if present.
+// The pre-1.0.17 name is accepted as a fallback so an install that updated
+// while offline (bundle not fetched yet) still launches.
 func nativeUIPath() string {
 	self, err := os.Executable()
 	if err != nil {
 		return ""
 	}
-	p := filepath.Join(filepath.Dir(self), nativeUIExe)
-	if _, err := os.Stat(p); err != nil {
-		return ""
+	dir := filepath.Dir(self)
+	for _, n := range []string{nativeUIExe, legacyUIExe} {
+		p := filepath.Join(dir, n)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
 	}
-	return p
+	return ""
 }

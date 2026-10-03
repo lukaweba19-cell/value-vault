@@ -27,6 +27,7 @@ void main() {
     expect(r.ok, isTrue, reason: r.text);
     expect(r.status, 200);
     expect(r.text, contains('SOLO Checker backend running'));
+    expect(r.text, contains('xbox-checker.exe'));
   });
 
   test('update check route is registered on the FFI mux', skip: skip,

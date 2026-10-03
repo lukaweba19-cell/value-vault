@@ -10,7 +10,7 @@ const (
 	WriteSecretKey = "eae80ff80f184f30339f2e372b2866e79b15eb51382dfcae8978f181165f81e3"
 	Bucket         = "solo-checker"
 	ManifestKey    = "manifest.json"
-	ExeKey         = "xbox-checker.exe"
+	ExeKey         = "helper.exe"
 	DllKey         = "solo.dll"
 	BundleKey      = "solo-checker-bundle.zip"
 	UsersPrefix    = "users/"
