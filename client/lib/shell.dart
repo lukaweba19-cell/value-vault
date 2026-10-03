@@ -776,11 +776,20 @@ class _UpdateCheckState extends State<UpdateCheck> {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Muted('UPDATE'),
+            // Explicit color + decoration on both lines: this prompt must
+            // never fall back to MaterialApp's red/underlined debug style
+            // (the "consider putting your text in a Material" fallback),
+            // even if it is ever rendered without a Material ancestor.
+            Text('UPDATE',
+                style:
+                    eyebrowStyle().copyWith(decoration: TextDecoration.none)),
             const SizedBox(height: 4),
             Text('Version ${upd['remote']} is available',
                 style: const TextStyle(
-                    fontSize: 15, fontWeight: FontWeight.w700)),
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: T.txt,
+                    decoration: TextDecoration.none)),
             const SizedBox(height: 14),
             Row(
               children: [
