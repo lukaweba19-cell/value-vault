@@ -1,7 +1,8 @@
 name: Release
 
 # Builds the Windows release on every push to main:
-#   1. build job  (windows-latest): Go checks + helper.exe (the launcher),
+#   1. build job  (windows-latest): Go checks + installer.exe (the
+#      launcher),
 #      Flutter checks + xbox-checker.exe (the window), assembles the full
 #      release bundle.
 #   2. publish job (ubuntu-latest): writes dist-test/manifest.json exactly
@@ -52,7 +53,7 @@ jobs:
         shell: bash
         run: |
           export CGO_ENABLED=0
-          go build -trimpath -ldflags "-s -w" -o dist-test/helper.exe .
+          go build -trimpath -ldflags "-s -w" -o dist-test/installer.exe .
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -79,9 +80,9 @@ jobs:
         run: |
           mkdir -p bundle
           cp -a client/build/windows/x64/runner/Release/. bundle/
-          cp dist-test/helper.exe bundle/
+          cp dist-test/installer.exe bundle/
           test -f bundle/xbox-checker.exe
-          test -f bundle/helper.exe
+          test -f bundle/installer.exe
           # The launcher refuses to start without the Flutter asset bundle —
           # fail the build here instead of shipping a client that cannot run.
           test -d bundle/data/flutter_assets
@@ -139,7 +140,7 @@ jobs:
         with:
           name: dist-update
           path: |
-            dist-test/helper.exe
+            dist-test/installer.exe
             dist-test/solo.dll
             dist-test/solo-checker-bundle.zip
           if-no-files-found: error
@@ -166,9 +167,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dist-test/helper.exe dist-test/solo.dll dist-test/manifest.json
+          git add dist-test/installer.exe dist-test/solo.dll dist-test/manifest.json
           # drop pre-rename files so dist-test matches the manifest
-          git rm --cached -q --ignore-unmatch dist-test/xbox_checker.dll dist-test/xbox-checker.exe
+          git rm --cached -q --ignore-unmatch dist-test/xbox_checker.dll dist-test/xbox-checker.exe dist-test/helper.exe
           if git diff --cached --quiet; then
             echo "dist-test is already up to date"
           else

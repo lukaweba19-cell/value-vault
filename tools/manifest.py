@@ -30,8 +30,8 @@ def go_string(path_glob, name):
 
 def main():
     ap = argparse.ArgumentParser(description="Write the update manifest for a built release.")
-    ap.add_argument("--exe", default=str(ROOT / "dist-test" / "helper.exe"),
-                    help="path to the built launcher exe (default: dist-test/helper.exe)")
+    ap.add_argument("--exe", default=str(ROOT / "dist-test" / "installer.exe"),
+                    help="path to the built launcher exe (default: dist-test/installer.exe)")
     ap.add_argument("--dll", default=str(ROOT / "dist-test" / "solo.dll"),
                     help="path to the FFI engine DLL (added to the manifest when present)")
     ap.add_argument("--bundle", default=str(ROOT / "dist-test" / "solo-checker-bundle.zip"),

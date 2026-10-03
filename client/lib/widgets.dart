@@ -1,6 +1,7 @@
 // Shared widgets: SVG icons (paths byte-exact from app.mjs), buttons, tags,
 // modal, section heads, choice cards — Flutter equivalents of the web kit.
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -22,7 +23,9 @@ class IconResume extends StatelessWidget {
   const IconResume({super.key, this.size = 18});
   @override
   Widget build(BuildContext c) => _StrokeIcon(
-      'M4 12a8 8 0 101.7-4.9', size, T.pur,
+      // Arc flags (large-arc / sweep) are spaced out: the tokenizer reads
+      // "101.7" as one number instead of flags 1, 0 + 1.7.
+      'M4 12a8 8 0 1 0 1.7 -4.9', size, T.pur,
       second: 'M4 5v5h5');
 }
 
@@ -96,7 +99,7 @@ class IconHome extends StatelessWidget {
   const IconHome({super.key, this.size = 14, this.color = Colors.white});
   @override
   Widget build(BuildContext c) => _StrokeIcon(
-      'M4 11l8-7 8 7v8a1.5 1.5 0 01-1.5 1.5h-13A1.5 1.5 0 014 19v-8z',
+      'M4 11l8-7 8 7v8a1.5 1.5 0 0 1 -1.5 1.5h-13A1.5 1.5 0 0 1 4 19v-8z',
       size,
       color,
       second: 'M10 20.5v-6h4v6',
@@ -154,12 +157,13 @@ class _FillPainter extends CustomPainter {
   bool shouldRepaint(covariant _FillPainter old) => old.d != d;
 }
 
-/// Tiny SVG path parser (M, L, H, V, Z + relative m/l/h/v/z).
+/// Tiny SVG path parser (M, L, H, V, A, Z + relative variants).
 ///
 /// Tokenizes by regex instead of whitespace: the icon paths are compact SVG
 /// (`M12 5v14M5 12h14`) where letters are glued to their numbers — the old
 /// whitespace split produced garbage tokens and drew NOTHING, which emptied
-/// every icon box in the app.
+/// every icon box in the app. Arc flags cannot be glued to the next number
+/// (`a… 0 101.7-4.9` must be written `a… 0 1 0 1.7 -4.9`).
 Path _parsePath(String d) {
   final path = Path();
   final tokens = RegExp(r'[A-Za-z]|-?\d*\.?\d+(?:e-?\d+)?')
@@ -237,7 +241,17 @@ Path _parsePath(String d) {
         break;
       case 'A':
       case 'a':
-        i += 7;
+        // Elliptical arc (SVG endpoint form). Skipping this — as the parser
+        // used to — dropped the resume icon's circle and the home icon's
+        // rounded corners, leaving only the arrowhead (a bare "L").
+        final rx = num(), ry = num(), rot = num();
+        final large = num() != 0, sweep = num() != 0;
+        final ex = num(), ey = num();
+        final x2 = cmd == 'A' ? ex : cx + ex;
+        final y2 = cmd == 'A' ? ey : cy + ey;
+        _arcSegment(path, cx, cy, rx, ry, rot, large, sweep, x2, y2);
+        cx = x2;
+        cy = y2;
         break;
       case 'C':
       case 'c':
@@ -258,6 +272,62 @@ Path _parsePath(String d) {
     }
   }
   return path;
+}
+
+/// Draws an elliptical arc from (x1,y1) to (x2,y2) using the endpoint →
+/// center conversion of the SVG spec (F.6.5), then hands it to
+/// [Path.arcTo] (angle 0 = 3 o'clock, positive = clockwise on screen —
+/// the same convention as atan2 in Flutter's y-down coordinates). Rotated
+/// arcs are sampled into line segments because arcTo cannot rotate an
+/// ellipse; the shipped icons use rotation 0.
+void _arcSegment(Path path, double x1, double y1, double rx, double ry,
+    double rotDeg, bool large, bool sweep, double x2, double y2) {
+  if (rx == 0 || ry == 0 || (x1 == x2 && y1 == y2)) {
+    path.lineTo(x2, y2);
+    return;
+  }
+  rx = rx.abs();
+  ry = ry.abs();
+  final phi = rotDeg * pi / 180;
+  final cosP = cos(phi), sinP = sin(phi);
+  final dx = (x1 - x2) / 2, dy = (y1 - y2) / 2;
+  final x1p = cosP * dx + sinP * dy;
+  final y1p = -sinP * dx + cosP * dy;
+  // F.6.6: scale the radii up if they cannot span both endpoints.
+  final lambda = x1p * x1p / (rx * rx) + y1p * y1p / (ry * ry);
+  if (lambda > 1) {
+    final s = sqrt(lambda);
+    rx *= s;
+    ry *= s;
+  }
+  final rad2 = rx * rx * ry * ry;
+  final den = rx * rx * y1p * y1p + ry * ry * x1p * x1p;
+  final numer = rad2 - den;
+  final coef = (large == sweep ? -1.0 : 1.0) *
+      sqrt(numer > 0 ? numer / den : 0.0);
+  final cxp = coef * rx * y1p / ry;
+  final cyp = -coef * ry * x1p / rx;
+  final cx = cosP * cxp - sinP * cyp + (x1 + x2) / 2;
+  final cy = sinP * cxp + cosP * cyp + (y1 + y2) / 2;
+  double angle(double ux, double uy, double vx, double vy) =>
+      atan2(ux * vy - uy * vx, ux * vx + uy * vy);
+  final ux = (x1p - cxp) / rx, uy = (y1p - cyp) / ry;
+  final vx = (-x1p - cxp) / rx, vy = (-y1p - cyp) / ry;
+  final th1 = angle(1, 0, ux, uy);
+  var dth = angle(ux, uy, vx, vy);
+  if (!sweep && dth > 0) dth -= 2 * pi;
+  if (sweep && dth < 0) dth += 2 * pi;
+  if (rotDeg == 0) {
+    path.arcTo(
+        Rect.fromLTRB(cx - rx, cy - ry, cx + rx, cy + ry), th1, dth, false);
+    return;
+  }
+  const steps = 24;
+  for (var k = 1; k <= steps; k++) {
+    final t = th1 + dth * k / steps;
+    final ex = rx * cos(t), ey = ry * sin(t);
+    path.lineTo(cx + cosP * ex - sinP * ey, cy + sinP * ex + cosP * ey);
+  }
 }
 
 class _StrokeIcon extends StatelessWidget {

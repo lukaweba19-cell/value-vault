@@ -10,8 +10,11 @@ const (
 	WriteSecretKey = "eae80ff80f184f30339f2e372b2866e79b15eb51382dfcae8978f181165f81e3"
 	Bucket         = "solo-checker"
 	ManifestKey    = "manifest.json"
-	ExeKey         = "helper.exe"
-	DllKey         = "solo.dll"
-	BundleKey      = "solo-checker-bundle.zip"
-	UsersPrefix    = "users/"
+	// ExeKey is the launcher/installer beside the window. Legacy names the
+	// boot path still relocates from: xbox-checker.exe (≤1.0.16) and
+	// helper.exe (1.0.17–1.0.18).
+	ExeKey      = "installer.exe"
+	DllKey      = "solo.dll"
+	BundleKey   = "solo-checker-bundle.zip"
+	UsersPrefix = "users/"
 )

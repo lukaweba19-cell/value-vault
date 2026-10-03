@@ -21,7 +21,7 @@ import (
 	"xbox-checker/internal/keys"
 )
 
-const AppVersion = "1.0.18"
+const AppVersion = "1.0.19"
 
 func SignGet(key string) (*stdhttp.Request, error) {
 	key = strings.TrimPrefix(key, "/")
@@ -278,11 +278,17 @@ func launcherPath() (string, error) {
 	if strings.EqualFold(filepath.Base(self), keys.ExeKey) {
 		return self, nil
 	}
-	p := filepath.Join(filepath.Dir(self), keys.ExeKey)
-	if _, err := os.Stat(p); err != nil {
-		return "", fmt.Errorf("%s not found beside the app", keys.ExeKey)
+	dir := filepath.Dir(self)
+	// Canonical name first, then the ≤1.0.18 name: an install whose
+	// launcher has not relocated yet still has a swap-able file beside the
+	// window, and the new image renames itself to ExeKey at next boot.
+	for _, n := range []string{keys.ExeKey, "helper.exe"} {
+		p := filepath.Join(dir, n)
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
 	}
-	return p, nil
+	return "", fmt.Errorf("%s not found beside the app", keys.ExeKey)
 }
 
 // HandleApplyPending is the in-process (dart:ffi) update apply. It follows
@@ -433,6 +439,7 @@ func AfterUpdateCleanup() {
 	olds := []string{
 		target + ".old",
 		filepath.Join(dir, "xbox-checker.exe.old"), // pre-1.0.17 launcher name
+		filepath.Join(dir, "helper.exe.old"),       // 1.0.17–1.0.18 launcher name
 	}
 	for i := 0; i < 5; i++ {
 		removed := true
@@ -453,6 +460,7 @@ func AfterUpdateCleanup() {
 	for _, n := range []string{
 		filepath.Join(dir, keys.ExeKey+pendingNewSuffix),
 		filepath.Join(dir, "xbox-checker.exe"+pendingNewSuffix),
+		filepath.Join(dir, "helper.exe"+pendingNewSuffix), // ≤1.0.18 staging name
 		filepath.Join(dir, pendingMarker),
 	} {
 		_ = os.Remove(n)

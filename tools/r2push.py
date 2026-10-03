@@ -20,7 +20,7 @@ import urllib.request
 import pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-EXE_PATH = ROOT / "dist-test" / "helper.exe"
+EXE_PATH = ROOT / "dist-test" / "installer.exe"
 DLL_PATH = ROOT / "dist-test" / "solo.dll"
 BUNDLE_PATH = ROOT / "dist-test" / "solo-checker-bundle.zip"
 MANIFEST_PATH = ROOT / "dist-test" / "manifest.json"

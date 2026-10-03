@@ -146,7 +146,7 @@ func extractBundle(raw []byte, dir string) error {
 	self, _ := os.Executable()
 	skipNames := map[string]bool{
 		// The running file only: after the launcher rename this is
-		// helper.exe, so the extracted window (xbox-checker.exe) always
+		// installer.exe, so the extracted window (xbox-checker.exe) always
 		// lands and the launcher never overwrites itself.
 		filepath.Base(filepath.Clean(self)): true,
 	}
