@@ -7,9 +7,12 @@ name: Release
 #      release bundle.
 #   2. publish job (ubuntu-latest): writes dist-test/manifest.json exactly
 #      like tools/manifest.py does locally, commits dist-test back to main
-#      ([skip ci] prevents loops), then pushes exe + manifest to R2 via
-#      tools/r2push.py (same gates: version == AppVersion, manifest sha ==
-#      exe sha, exe uploaded before manifest, read-back verification).
+#      ([skip ci] prevents loops), then pushes the full client file tree as
+#      loose objects at the bucket root + manifest via tools/r2push.py
+#      (same gates: version == AppVersion, manifest sha == exe sha, every
+#      files[] entry matches the tree, files uploaded before manifest,
+#      read-back verification). No zip is uploaded — the legacy
+#      solo-checker-bundle.zip object is deleted.
 
 on:
   push:
@@ -121,12 +124,17 @@ jobs:
           test -f bundle/solo.dll
           ls -la dist-test/solo.dll bundle/solo.dll
 
-      - name: Pack client bundle zip for R2
+      - name: Verify client bundle tree for R2
         shell: bash
         run: |
-          ( cd bundle && 7z a -tzip ../dist-test/solo-checker-bundle.zip . )
-          ls -la dist-test/solo-checker-bundle.zip
-          python3 -c "import zipfile; print(len(zipfile.ZipFile('dist-test/solo-checker-bundle.zip').infolist()), 'entries')" 2>/dev/null || true
+          ls -la bundle
+          test -f bundle/xbox-checker.exe
+          test -f bundle/installer.exe
+          test -f bundle/flutter_windows.dll
+          test -f bundle/solo.dll
+          test -f bundle/data/app.so
+          test -d bundle/data/flutter_assets
+          echo "bundle tree ready for loose-object upload"
 
       - name: Upload release bundle
         uses: actions/upload-artifact@v4
@@ -142,7 +150,6 @@ jobs:
           path: |
             dist-test/installer.exe
             dist-test/solo.dll
-            dist-test/solo-checker-bundle.zip
           if-no-files-found: error
 
   publish:
@@ -158,6 +165,12 @@ jobs:
         with:
           name: dist-update
           path: dist-test
+
+      - name: Download client bundle tree
+        uses: actions/download-artifact@v4
+        with:
+          name: solo-checker-windows
+          path: bundle
 
       - name: Write update manifest
         run: python3 tools/manifest.py

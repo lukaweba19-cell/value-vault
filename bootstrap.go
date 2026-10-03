@@ -1,17 +1,16 @@
 // First-boot bootstrap for installs that only carry the exe. Old clients
-// self-update by replacing just xbox-checker.exe; after this binary restarts
-// it pulls the remaining release objects (solo.dll and the full
-// Flutter client bundle) from R2 once, so the native window can start.
+// self-update by replacing just the launcher; after this binary restarts
+// it pulls the remaining release files (window, Flutter runtime, data/
+// assets, engine DLL) from R2 as individual objects — no zip — verified
+// per file against the manifest's sha256 list.
 package main
 
 import (
-	"archive/zip"
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"xbox-checker/internal/keys"
@@ -19,12 +18,13 @@ import (
 )
 
 // ensureClientBundle materializes the Flutter client next to this exe when
-// any required piece is missing (launcher exe, engine DLL or the Flutter
-// asset bundle) or when the extracted client is from an older release
-// (data/client.version stamp differs from AppVersion — an update must
-// deliver the new DLL and assets, not just the new launcher). It is a
-// no-op on healthy, current installs (everything present → no network
-// traffic at all).
+// any required piece is missing or when the extracted client is from an
+// older release (data/client.version stamp differs from AppVersion — an
+// update must deliver the new DLL and assets, not just the new launcher).
+// It pulls every entry of the manifest's file list as its own R2 object,
+// skipping files already present with the right sha256 (so a later
+// release only downloads what changed). It is a no-op on healthy, current
+// installs (everything present → no network traffic at all).
 func ensureClientBundle() {
 	dir := exeDir()
 	if dir == "" {
@@ -35,36 +35,76 @@ func ensureClientBundle() {
 		return
 	}
 	if clientFilesReady() {
-		bootLogf("client bootstrap: client is %q, want %s — fetching bundle from R2",
+		bootLogf("client bootstrap: client is %q, want %s — pulling file list from R2",
 			clientStamp(dir), r2store.AppVersion)
 	} else {
-		bootLogf("client bootstrap: files missing beside exe — fetching bundle from R2")
+		bootLogf("client bootstrap: files missing beside exe — pulling file list from R2")
 	}
 	m, err := r2store.FetchUpdateManifest()
 	if err != nil {
 		bootLogf("client bootstrap: manifest: %v", err)
 		return
 	}
-	raw, err := r2store.Get(m.Bundle)
-	if err != nil {
-		bootLogf("client bootstrap: bundle: %v", err)
+	if len(m.Files) == 0 {
+		bootLogf("client bootstrap: manifest %s has no file list", m.Version)
 		return
 	}
-	if m.BundleSHA != "" {
-		sum := sha256.Sum256(raw)
-		if got := hex.EncodeToString(sum[:]); got != m.BundleSHA {
-			bootLogf("client bootstrap: bundle sha mismatch (got %s)", got)
+	self, _ := os.Executable()
+	rels := make([]string, 0, len(m.Files))
+	for rel := range m.Files {
+		rels = append(rels, rel)
+	}
+	sort.Strings(rels)
+	wrote := 0
+	for _, rel := range rels {
+		want := m.Files[rel]
+		name := filepath.Clean(filepath.FromSlash(rel))
+		if name == "." || strings.HasPrefix(name, "..") || filepath.IsAbs(name) {
+			bootLogf("client bootstrap: bad file key %q", rel)
 			return
 		}
+		dst := filepath.Join(dir, name)
+		if !underDir(dst, dir) {
+			bootLogf("client bootstrap: bad file key %q", rel)
+			return
+		}
+		// The running image only: it arrived via self-update, so it is
+		// already the new bytes — and Windows keeps it locked anyway.
+		if strings.EqualFold(filepath.Clean(dst), filepath.Clean(self)) {
+			continue
+		}
+		if sha256File(dst) == want {
+			continue // already correct — only changed files get fetched
+		}
+		raw, err := r2store.Get(rel)
+		if err != nil {
+			bootLogf("client bootstrap: %s: %v", rel, err)
+			return
+		}
+		sum := sha256.Sum256(raw)
+		if got := hex.EncodeToString(sum[:]); got != want {
+			bootLogf("client bootstrap: %s sha mismatch (got %s)", rel, got)
+			return
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			bootLogf("client bootstrap: %s: %v", rel, err)
+			return
+		}
+		if err := os.WriteFile(dst, raw, 0o755); err != nil {
+			bootLogf("client bootstrap: %s: %v", rel, err)
+			return
+		}
+		wrote++
 	}
-	if err := extractBundle(raw, dir); err != nil {
-		bootLogf("client bootstrap: extract: %v", err)
+	if !clientFilesReady() {
+		bootLogf("client bootstrap: files still incomplete after pull — not stamping")
 		return
 	}
-	// Stamp the extracted client so the next release refreshes it again.
+	// Stamp the pulled client so the next release refreshes it again.
 	if err := os.WriteFile(clientStampPath(dir), []byte(m.Version), 0o644); err != nil {
 		bootLogf("client bootstrap: stamp: %v", err)
 	}
+	bootLogf("client bootstrap: pulled %d files, stamp %s", wrote, m.Version)
 	// Remove the engine DLL under its pre-1.0.16 name (xbox_checker.dll);
 	// keeping it would leave a stale second engine beside solo.dll forever.
 	if keys.DllKey != "xbox_checker.dll" {
@@ -134,65 +174,15 @@ func exeDir() string {
 	return filepath.Dir(self)
 }
 
-// extractBundle unpacks the release zip beside the exe. Individual files
-// that cannot be written (notably this running exe, which Windows keeps
-// locked — it is already the newest piece, having arrived via self-update)
-// are skipped rather than failing the whole extraction.
-func extractBundle(raw []byte, dir string) error {
-	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+// sha256File returns the lowercase hex sha256 of a file, or "" when the
+// file is missing/unreadable (never matches a manifest hash → refetch).
+func sha256File(path string) string {
+	b, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return ""
 	}
-	self, _ := os.Executable()
-	skipNames := map[string]bool{
-		// The running file only: after the launcher rename this is
-		// installer.exe, so the extracted window (xbox-checker.exe) always
-		// lands and the launcher never overwrites itself.
-		filepath.Base(filepath.Clean(self)): true,
-	}
-	extracted := 0
-	for _, f := range zr.File {
-		name := filepath.Clean(f.Name)
-		if name == "." || strings.HasPrefix(name, "..") || filepath.IsAbs(name) {
-			continue
-		}
-		dst := filepath.Join(dir, name)
-		if !underDir(dst, dir) {
-			continue
-		}
-		if f.FileInfo().IsDir() {
-			_ = os.MkdirAll(dst, 0o755)
-			continue
-		}
-		if skipNames[filepath.Base(dst)] {
-			continue
-		}
-		if err := writeZipFile(f, dst); err != nil {
-			bootLogf("client bootstrap: %s: %v", name, err)
-			continue
-		}
-		extracted++
-	}
-	bootLogf("client bootstrap: extracted %d files", extracted)
-	return nil
-}
-
-func writeZipFile(f *zip.File, dst string) error {
-	rc, err := f.Open()
-	if err != nil {
-		return err
-	}
-	defer rc.Close()
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	_, err = io.Copy(out, rc)
-	return err
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 // underDir keeps extraction inside the target directory (zip-slip guard).

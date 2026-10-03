@@ -3,10 +3,12 @@
 
 - Reads AppVersion from internal/r2store/r2store.go and ExeKey from
   internal/keys/keys.go (same constants tools/r2push.py gates on).
-- Writes {"version","sha256","key"} byte-identical to the shipped manifest.
+- Writes {"version","sha256","key","files"} — files maps every file of
+  the client bundle tree to its sha256; tools/r2push.py uploads them as
+  loose objects at the bucket root (no zip).
 
 Usage:
-  python3 tools/manifest.py [--exe PATH] [--out PATH]
+  python3 tools/manifest.py [--exe PATH] [--dll PATH] [--bundle-dir PATH] [--out PATH]
 """
 import argparse
 import hashlib
@@ -34,8 +36,8 @@ def main():
                     help="path to the built launcher exe (default: dist-test/installer.exe)")
     ap.add_argument("--dll", default=str(ROOT / "dist-test" / "solo.dll"),
                     help="path to the FFI engine DLL (added to the manifest when present)")
-    ap.add_argument("--bundle", default=str(ROOT / "dist-test" / "solo-checker-bundle.zip"),
-                    help="path to the client bundle zip (added to the manifest when present)")
+    ap.add_argument("--bundle-dir", default=str(ROOT / "bundle"),
+                    help="client bundle tree uploaded as loose R2 objects (default: bundle/)")
     ap.add_argument("--out", default=str(ROOT / "dist-test" / "manifest.json"),
                     help="where to write the manifest (default: dist-test/manifest.json)")
     args = ap.parse_args()
@@ -55,12 +57,18 @@ def main():
         manifest["dll"] = go_string("internal/keys/*.go", "DllKey")
         manifest["dll_sha256"] = hashlib.sha256(dll_path.read_bytes()).hexdigest()
         notes.append(f"dll={manifest['dll']}")
-    bundle_path = pathlib.Path(args.bundle)
-    if bundle_path.is_file():
-        manifest["bundle"] = go_string("internal/keys/*.go", "BundleKey")
-        manifest["bundle_sha256"] = hashlib.sha256(bundle_path.read_bytes()).hexdigest()
-        notes.append(f"bundle={manifest['bundle']}")
-
+    bundle_dir = pathlib.Path(args.bundle_dir)
+    if not bundle_dir.is_dir():
+        sys.exit(f"bundle dir not found: {bundle_dir}")
+    files = {}
+    for p in sorted(bundle_dir.rglob("*")):
+        if p.is_file():
+            files[p.relative_to(bundle_dir).as_posix()] = hashlib.sha256(
+                p.read_bytes()).hexdigest()
+    if not files:
+        sys.exit(f"bundle dir is empty: {bundle_dir}")
+    manifest["files"] = files
+    notes.append(f"files={len(files)}")
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(manifest, separators=(",", ":")) + "\n", encoding="utf-8")

@@ -21,7 +21,7 @@ import (
 	"xbox-checker/internal/keys"
 )
 
-const AppVersion = "1.0.19"
+const AppVersion = "1.0.20"
 
 func SignGet(key string) (*stdhttp.Request, error) {
 	key = strings.TrimPrefix(key, "/")
@@ -119,13 +119,16 @@ type UpdateManifest struct {
 	Key     string `json:"key"`
 	Notes   string `json:"notes"`
 	URL     string `json:"url"`
-	// Optional sidecar objects for installs that only carry the exe: the
-	// native client DLL and the full Flutter bundle, fetched once on first
-	// boot after a self-update (bootstrap.go). Older clients ignore these.
+	// Sidecar objects for installs that only carry the exe, fetched on
+	// first boot after a self-update (bootstrap.go). Older clients ignore
+	// these; Bundle/BundleSHA are the legacy zip (≤1.0.19).
 	DLL       string `json:"dll,omitempty"`
 	DLLSHA    string `json:"dll_sha256,omitempty"`
 	Bundle    string `json:"bundle,omitempty"`
 	BundleSHA string `json:"bundle_sha256,omitempty"`
+	// Files is the full install tree as loose objects at the bucket root:
+	// object key (relative path, forward slashes) -> sha256.
+	Files map[string]string `json:"files,omitempty"`
 }
 
 func FetchUpdateManifest() (UpdateManifest, error) {
@@ -141,6 +144,9 @@ func FetchUpdateManifest() (UpdateManifest, error) {
 	m.SHA256 = strings.ToLower(strings.TrimSpace(m.SHA256))
 	m.DLLSHA = strings.ToLower(strings.TrimSpace(m.DLLSHA))
 	m.BundleSHA = strings.ToLower(strings.TrimSpace(m.BundleSHA))
+	for k, v := range m.Files {
+		m.Files[k] = strings.ToLower(strings.TrimSpace(v))
+	}
 	if m.Key == "" {
 		m.Key = keys.ExeKey
 	}
