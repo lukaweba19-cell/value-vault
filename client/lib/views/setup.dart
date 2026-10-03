@@ -27,7 +27,6 @@ class SetupView extends StatefulWidget {
 
 class _SetupViewState extends State<SetupView> {
   List<Map<String, dynamic>> _saved = [];
-  bool _saveOpen = false;
   final _saveName = TextEditingController();
 
   // Persistent controllers: the old code built a fresh controller from the
@@ -177,6 +176,15 @@ class _SetupViewState extends State<SetupView> {
     _loadSaved();
   }
 
+  /// Opens the save-server form as a compact centered modal. It used to
+  /// render inline at the bottom of the form — a huge box under the Start
+  /// button where the fields sat far below the action that opened it.
+  Future<void> _openSaveDialog() async {
+    _saveName.clear();
+    if (!mounted) return;
+    await showAppModal<void>(context, _saveServerBody());
+  }
+
   Future<void> _saveServer() async {
     final urls =
         form.proxyUrls.map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
@@ -187,7 +195,7 @@ class _SetupViewState extends State<SetupView> {
       'name': name,
       'urls': urls,
     });
-    setState(() => _saveOpen = false);
+    if (mounted) Navigator.of(context).pop();
     _saveName.clear();
     _loadSaved();
   }
@@ -334,8 +342,6 @@ class _SetupViewState extends State<SetupView> {
             ),
           ],
         ),
-
-        if (_saveOpen) _saveServerDialog(),
       ],
     );
   }
@@ -426,9 +432,7 @@ class _SetupViewState extends State<SetupView> {
                     form.proxyUrls.removeLast();
                     _syncUrlCtrls();
                   })),
-            TextBtn(
-                label: 'Save list',
-                onPressed: () => setState(() => _saveOpen = true)),
+            TextBtn(label: 'Save list', onPressed: _openSaveDialog),
             TextBtn(label: 'Check', onPressed: _testServer),
             Tag(text: form.proxyCount ?? '0 proxies'),
             TextBtn(
@@ -442,16 +446,11 @@ class _SetupViewState extends State<SetupView> {
 
   Widget _savedPicker(String kind) {
     final rows = _rowsFor(kind);
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: T.card,
-        border: Border.all(color: T.line),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+    // No card of its own: showAppModal already draws the panel (one box,
+    // one border — nesting a second card here looked broken).
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Row(
             children: [
@@ -516,46 +515,55 @@ class _SetupViewState extends State<SetupView> {
               ),
             );
           }),
-        ],
-      ),
+      ],
     );
   }
 
-  Widget _saveServerDialog() {
-    return Container(
-      margin: const EdgeInsets.only(top: 18),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: T.card,
-        border: Border.all(color: T.line),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Eyebrow('Save server list'),
-          const SizedBox(height: 12),
-          Text('NAME', style: labelStyle()),
-          const SizedBox(height: 6),
-          TextInput(
-            hint: 'proxy-labs https',
-            controller: _saveName,
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              TextBtn(
-                  label: 'Save',
-                  kind: BtnKind.primary,
-                  onPressed: _saveServer),
-              const SizedBox(width: 8),
-              TextBtn(
-                  label: 'Cancel',
-                  onPressed: () => setState(() => _saveOpen = false)),
-            ],
-          ),
-        ],
-      ),
+  /// Compact modal body: title, one NAME field, Save/Cancel. No card of its
+  /// own — showAppModal already draws the panel (same pattern as _savedPicker).
+  Widget _saveServerBody() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            const Expanded(
+              child: Text(
+                'Save server list',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+              ),
+            ),
+            TextBtn(
+              label: 'Close',
+              kind: BtnKind.secondary,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+          ],
+        ),
+        const SizedBox(height: 14),
+        Text('NAME', style: labelStyle()),
+        const SizedBox(height: 6),
+        TextInput(
+          hint: 'proxy-labs https',
+          controller: _saveName,
+          onSubmitted: _saveServer,
+        ),
+        const SizedBox(height: 14),
+        Row(
+          children: [
+            TextBtn(
+                label: 'Save',
+                kind: BtnKind.primary,
+                onPressed: _saveServer),
+            const SizedBox(width: 8),
+            TextBtn(
+                label: 'Cancel',
+                onPressed: () => Navigator.of(context).pop()),
+          ],
+        ),
+      ],
     );
   }
 }

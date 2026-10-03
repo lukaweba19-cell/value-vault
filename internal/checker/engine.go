@@ -266,6 +266,13 @@ func RunEngine(cfg Config, progressChan chan ProgressEvent) {
 						if _, loaded := inRetry.LoadAndDelete(lk); loaded {
 							sendProgress(progressChan, ProgressEvent{IsRetry: true, RetryDelta: -1})
 						}
+						// The line is being given up on — it must produce an
+						// outcome event, otherwise CHECKED never advances for
+						// it: the run reported "Done — 14/615" while every
+						// retried line silently vanished from the counters.
+						sendProgress(progressChan, ProgressEvent{
+							LogMsg: fmt.Sprintf("[FAIL] %s — attempts exhausted", email),
+						})
 						MarkLineDone(&cfg, lineNo)
 						if atomic.LoadInt32(&retryPhase) == 0 {
 							atomic.AddInt64(&firstLeft, -1)

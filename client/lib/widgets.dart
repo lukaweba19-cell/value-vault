@@ -810,7 +810,15 @@ Future<R?> showAppModal<R>(BuildContext context, Widget child,
                         offset: Offset(0, 26)),
                   ],
                 ),
-                child: child,
+                // Material supplies the app's DefaultTextStyle to the modal
+                // content. Without it, every Text here falls back to
+                // MaterialApp's loud debug style (red text + yellow double
+                // underline — "consider putting your text in a Material")
+                // and it also gives the rows a real Ink surface.
+                child: Material(
+                  type: MaterialType.transparency,
+                  child: child,
+                ),
               ),
             ),
           ),

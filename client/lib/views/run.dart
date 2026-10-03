@@ -125,6 +125,13 @@ class _RunViewState extends State<RunView> {
 
     final paused = s['paused'] == true;
     final running = s['running'] == true;
+    // A run that is no longer active has finished (Done/Stopped status from
+    // the engine): the Pause/Stop controls are meaningless then, so only the
+    // status pill and the tiles remain.
+    final active = running || paused;
+    final statusText = '${s['status'] ?? 'Ready'}';
+    final finished = !active &&
+        (statusText.startsWith('Done') || statusText.startsWith('Stopped'));
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -136,20 +143,24 @@ class _RunViewState extends State<RunView> {
                   ? 'warn'
                   : running
                       ? 'yellow'
-                      : '',
-              child: Text('${s['status'] ?? 'Ready'}',
+                      : finished
+                          ? 'green'
+                          : '',
+              child: Text(statusText,
                   style: const TextStyle(
                       fontSize: 11, fontWeight: FontWeight.w600)),
             ),
             const Spacer(),
-            TextBtn(
-              label: paused ? 'Resume checking' : 'Pause',
-              kind: BtnKind.primary,
-              onPressed: widget.onPause,
-            ),
-            const SizedBox(width: 8),
-            TextBtn(label: 'Stop', onPressed: () => widget.onStop()),
-            const SizedBox(width: 8),
+            if (active) ...[
+              TextBtn(
+                label: paused ? 'Resume checking' : 'Pause',
+                kind: BtnKind.primary,
+                onPressed: widget.onPause,
+              ),
+              const SizedBox(width: 8),
+              TextBtn(label: 'Stop', onPressed: () => widget.onStop()),
+              const SizedBox(width: 8),
+            ],
             TextBtn(
                 label: 'Home',
                 icon: const IconBack(size: 14),
@@ -227,7 +238,7 @@ class _RunViewState extends State<RunView> {
           final split = box.maxWidth >= 1100;
           final activity = _LogPane(
             eyebrow: 'Activity',
-            hint: 'live',
+            hint: '${logs.length} lines',
             controller: _logsCtrl,
             lines: logs,
             colorOf: (l) => RegExp(r'\[HIT\]|\[Free Hit\]|\[Private Hit\]',

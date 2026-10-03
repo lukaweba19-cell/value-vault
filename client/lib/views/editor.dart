@@ -254,9 +254,12 @@ class _EditorViewState extends State<EditorView> {
       _filterStatus = 'Filtering…';
     });
     await _fSub?.cancel();
+    // A file without URLs must never be filtered by a stale URL typed for a
+    // previous file — the URL filter is ignored when the file has none.
+    final effUrl = _urls.isNotEmpty ? _urlFilter : '';
     final q = 'path=${Uri.encodeComponent(_path)}'
         '&email_types=${Uri.encodeComponent(_mailTypes)}'
-        '&url=${Uri.encodeComponent(_urlFilter)}';
+        '&url=${Uri.encodeComponent(effUrl)}';
     final stream = await Api.sse('/api/editor/filter-stream?$q');
     _fSub = stream.listen((d) {
       setState(() {
@@ -280,9 +283,10 @@ class _EditorViewState extends State<EditorView> {
   }
 
   Future<void> _exportFiltered() async {
-    final url = _urlFilter.isEmpty
+    final effUrl = _urls.isNotEmpty ? _urlFilter : '';
+    final url = effUrl.isEmpty
         ? 'filtered'
-        : _urlFilter.replaceAll(RegExp(r'[^\w.\-]+'), '_');
+        : effUrl.replaceAll(RegExp(r'[^\w.\-]+'), '_');
     final r = await Api.get('/api/pick-save?name=${Uri.encodeComponent('$url.txt')}');
     if (r.data is! Map || r.data['path'] == null) return;
     setState(() => _filterStatus = 'Saving…');
@@ -290,7 +294,7 @@ class _EditorViewState extends State<EditorView> {
       'path': _path,
       'dest': r.data['path'],
       'email_types': _mailTypes,
-      'url': _urlFilter,
+      'url': effUrl,
       'banner': _sigTextOf(_sigHead),
       'banner_end': _sigTextOf(_sigTail),
     });
@@ -648,125 +652,159 @@ class _EditorViewState extends State<EditorView> {
   }
 
   Widget _loadTab() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text('FILE', style: labelStyle()),
-        const SizedBox(height: 6),
-        Row(
-          children: [
-            Expanded(
-              child: TextInput(
-                hint: 'combo / ULP path',
-                controller: _pathCtrl,
-                onChanged: (v) => _path = v,
-              ),
+    // Staged reveal: right after opening, only the FILE field + Browse are
+    // shown. The stats panes and the filter row appear once a file has been
+    // picked/analyzed, so the screen shows exactly what applies to it.
+    final analyzed = _lines > 0 ||
+        _domains.isNotEmpty ||
+        _urls.isNotEmpty ||
+        _msg.startsWith('Analyzing');
+    // The URL column and URL filter only make sense when the file actually
+    // holds URL lines — otherwise the email types get the full width and the
+    // filter row is email-only.
+    final hasUrls = _urls.isNotEmpty;
+
+    final children = <Widget>[
+      Text('FILE', style: labelStyle()),
+      const SizedBox(height: 6),
+      Row(
+        children: [
+          Expanded(
+            child: TextInput(
+              hint: 'combo / ULP path',
+              controller: _pathCtrl,
+              onChanged: (v) => _path = v,
             ),
-            const SizedBox(width: 8),
-            TextBtn(label: 'Browse', onPressed: () => _browse('editor')),
-          ],
-        ),
-        if (_msg.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6),
-            child: Muted(_msg, color: const Color(0xFF9AF0C8)),
           ),
-        const SizedBox(height: 8),
-        LayoutBuilder(builder: (context, box) {
-          final split = box.maxWidth >= 1100;
-          final topEmails = _statListPane(
-              'TOP EMAIL TYPES', _domains.take(10).toList(), 'email',
-              () => _openListModal('email'));
-          final topUrls = _statListPane(
-              'TOP URL / DOMAINS', _urls.take(10).toList(), 'host',
-              () => _openListModal('host'));
-          if (!split) {
-            return Column(children: [
-              topEmails,
-              const SizedBox(height: 16),
-              topUrls,
-            ]);
-          }
-          return Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(child: topEmails),
-              const SizedBox(width: 20),
-              Expanded(child: topUrls),
-            ],
-          );
-        }),
-        const SizedBox(height: 16),
-        LayoutBuilder(builder: (context, box) {
-          final a = Field(
-            label: 'Email types',
-            child: TextInput(
-              hint: '@outlook @hotmail @msn',
-              controller: _mailTypesCtrl,
-              onChanged: (v) {
-                _mailTypes = v;
-                _filterState = 'idle';
-              },
-            ),
-          );
-          final b = Field(
-            label: 'URL / domain',
-            child: TextInput(
-              hint: 'epicgames.com',
-              controller: _urlFilterCtrl,
-              onChanged: (v) {
-                _urlFilter = v;
-                _filterState = 'idle';
-              },
-            ),
-          );
-          if (box.maxWidth < 640) {
-            return Column(children: [
-              a,
-              const SizedBox(height: 16),
-              b,
-            ]);
-          }
-          return Row(children: [
-            Expanded(child: a),
-            const SizedBox(width: 20),
-            Expanded(child: b),
+          const SizedBox(width: 8),
+          TextBtn(label: 'Browse', onPressed: () => _browse('editor')),
+        ],
+      ),
+      if (_msg.isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Muted(_msg, color: const Color(0xFF9AF0C8)),
+        ),
+    ];
+
+    if (!analyzed) {
+      children.addAll(const [
+        SizedBox(height: 4),
+        Muted('Pick a file to see its email types, URL stats and filters.'),
+      ]);
+      return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch, children: children);
+    }
+
+    children.add(const SizedBox(height: 8));
+    final topEmails = _statListPane(
+        'TOP EMAIL TYPES', _domains.take(10).toList(), 'email',
+        () => _openListModal('email'));
+    if (hasUrls) {
+      final topUrls = _statListPane(
+          'TOP URL / DOMAINS', _urls.take(10).toList(), 'host',
+          () => _openListModal('host'));
+      children.add(LayoutBuilder(builder: (context, box) {
+        final split = box.maxWidth >= 1100;
+        if (!split) {
+          return Column(children: [
+            topEmails,
+            const SizedBox(height: 16),
+            topUrls,
           ]);
-        }),
-        const SizedBox(height: 12),
-        Row(
+        }
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            TextBtn(
-              label: switch (_filterState) {
-                'running' => 'Filtering',
-                'done' => 'Filtered',
-                _ => 'Filter',
-              },
-              onPressed: _runFilter,
-            ),
-            if (_filterState == 'done') ...[
-              const SizedBox(width: 8),
-              TextBtn(
-                  label: 'Export',
-                  kind: BtnKind.primary,
-                  onPressed: _openExportModal),
-            ],
+            Expanded(child: topEmails),
+            const SizedBox(width: 20),
+            Expanded(child: topUrls),
           ],
+        );
+      }));
+    } else {
+      // No URLs in the file: the email types span the full width instead of
+      // sitting on one half next to an empty column.
+      children.add(topEmails);
+    }
+
+    children.add(const SizedBox(height: 16));
+    final emailField = Field(
+      label: 'Email types',
+      child: TextInput(
+        hint: '@outlook @hotmail @msn',
+        controller: _mailTypesCtrl,
+        onChanged: (v) {
+          _mailTypes = v;
+          _filterState = 'idle';
+        },
+      ),
+    );
+    if (hasUrls) {
+      final urlField = Field(
+        label: 'URL / domain',
+        child: TextInput(
+          hint: 'epicgames.com',
+          controller: _urlFilterCtrl,
+          onChanged: (v) {
+            _urlFilter = v;
+            _filterState = 'idle';
+          },
         ),
-        if (_filterStatus.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            child: Muted(_filterStatus, color: const Color(0xFF9AF0C8)),
-          ),
+      );
+      children.add(LayoutBuilder(builder: (context, box) {
+        if (box.maxWidth < 640) {
+          return Column(children: [
+            emailField,
+            const SizedBox(height: 16),
+            urlField,
+          ]);
+        }
+        return Row(children: [
+          Expanded(child: emailField),
+          const SizedBox(width: 20),
+          Expanded(child: urlField),
+        ]);
+      }));
+    } else {
+      children.add(emailField);
+    }
+
+    children.add(const SizedBox(height: 12));
+    children.add(Row(
+      children: [
+        TextBtn(
+          label: switch (_filterState) {
+            'running' => 'Filtering',
+            'done' => 'Filtered',
+            _ => 'Filter',
+          },
+          onPressed: _runFilter,
+        ),
         if (_filterState == 'done') ...[
-          const SizedBox(height: 14),
-          _statListPane(
-              'FILTERED EMAIL TYPES', _filterAll.take(10).toList(), 'email',
-              () => _openListModal('filter'),
-              headerBottom: 4),
+          const SizedBox(width: 8),
+          TextBtn(
+              label: 'Export',
+              kind: BtnKind.primary,
+              onPressed: _openExportModal),
         ],
       ],
-    );
+    ));
+    if (_filterStatus.isNotEmpty) {
+      children.add(Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Muted(_filterStatus, color: const Color(0xFF9AF0C8)),
+      ));
+    }
+    if (_filterState == 'done') {
+      children.add(const SizedBox(height: 14));
+      children.add(_statListPane(
+          'FILTERED EMAIL TYPES', _filterAll.take(10).toList(), 'email',
+          () => _openListModal('filter'),
+          headerBottom: 4));
+    }
+    return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch, children: children);
   }
 
   Widget _statListPane(String title, List<StatEntry> items, String kind,

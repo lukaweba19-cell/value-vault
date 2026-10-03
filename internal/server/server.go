@@ -87,6 +87,13 @@ var (
 	pausedAccum  time.Duration
 	// rolling samples of checked counts for smoother ETA (unix ms, checked)
 	rateSamples [][2]int64
+	// runGen increments on every start (under mu). A consumer goroutine from
+	// an older run checks it under the same lock and discards its events, so
+	// a stale "Done" from a previous run can never clobber the current run's
+	// status or running flag.
+	runGen int64
+	// endedAt freezes the elapsed clock once a run finishes or is stopped.
+	endedAt time.Time
 )
 
 func formatDurationShort(d time.Duration) string {
@@ -110,9 +117,16 @@ func activeElapsed() time.Duration {
 	if startedAt.IsZero() {
 		return 0
 	}
-	elapsed := time.Since(startedAt) - pausedAccum
+	// Once the run is over, stop the clock: a finished run used to keep
+	// counting elapsed seconds, which made the UI look like it was still
+	// running.
+	end := time.Now()
+	if !endedAt.IsZero() && endedAt.Before(end) {
+		end = endedAt
+	}
+	elapsed := end.Sub(startedAt) - pausedAccum
 	if atomic.LoadInt32(&paused) == 1 && !pauseStarted.IsZero() {
-		elapsed -= time.Since(pauseStarted)
+		elapsed -= end.Sub(pauseStarted)
 	}
 	if elapsed < 0 {
 		elapsed = 0
@@ -153,6 +167,14 @@ func computeETA(checked, total int) (elapsedStr, etaStr string, rateCPM float64)
 		ratePerSec = float64(checked) / elapsed.Seconds()
 	}
 	rateCPM = ratePerSec * 60
+	// Not running anymore: freeze the ETA ("done" or "—") instead of
+	// keeping a live countdown ticking from stale rate samples.
+	if atomic.LoadInt32(&running) != 1 {
+		if total > 0 && checked >= total {
+			return elapsedStr, "done", rateCPM
+		}
+		return elapsedStr, "—", rateCPM
+	}
 	remain := total - checked
 	if remain < 0 {
 		remain = 0
@@ -231,6 +253,12 @@ func HandleStart(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	atomic.StoreInt32(&paused, 0)
 	checker.SetStopFlag(0)
 	checker.SetPauseFlag(0)
+	// New run generation: a consumer goroutine still draining an older run's
+	// channel sees the mismatch (under mu, same as here) and discards its
+	// events, so the previous run can never overwrite this run's status.
+	mu.Lock()
+	gen := atomic.AddInt64(&runGen, 1)
+	mu.Unlock()
 	atomic.StoreInt32(&running, 1)
 	checker.Hooks.OnTotal = func() {
 		mu.Lock()
@@ -320,15 +348,22 @@ func HandleStart(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	pauseStarted = time.Time{}
 	pausedAccum = 0
 	rateSamples = nil
+	endedAt = time.Time{}
 	status = fmt.Sprintf("Running — %d workers · %s", wc, filepath.Base(combo))
 	mu.Unlock()
 
 	ch := make(chan ProgressEvent, 50000)
 	atomic.StoreInt32(&engineAlive, 1)
 	go checker.RunEngine(cfg, ch)
-	go func() {
+	go func(gen int64) {
 		for ev := range ch {
 			mu.Lock()
+			if atomic.LoadInt64(&runGen) != gen {
+				// A newer run started — drop this stale event so it
+				// cannot overwrite the new run's status/running flag.
+				mu.Unlock()
+				continue
+			}
 			if ev.IsRetry {
 				retries += ev.RetryDelta
 				if retries < 0 {
@@ -378,14 +413,20 @@ func HandleStart(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 				} else {
 					status = "Done — saved to valid.txt. Return to menu."
 				}
+				endedAt = time.Now() // freeze the elapsed clock
 				atomic.StoreInt32(&running, 0)
 				atomic.StoreInt32(&engineAlive, 0)
 			}
 			mu.Unlock()
 		}
-		atomic.StoreInt32(&running, 0)
-		atomic.StoreInt32(&engineAlive, 0)
-	}()
+		mu.Lock()
+		stale := atomic.LoadInt64(&runGen) != gen
+		mu.Unlock()
+		if !stale {
+			atomic.StoreInt32(&running, 0)
+			atomic.StoreInt32(&engineAlive, 0)
+		}
+	}(gen)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "total": 0})
 }
@@ -420,6 +461,7 @@ func stopEngine() {
 	atomic.StoreInt32(&engineAlive, 0)
 	mu.Lock()
 	status = "Stopped — session saved"
+	endedAt = time.Now() // freeze the elapsed clock
 	mu.Unlock()
 }
 

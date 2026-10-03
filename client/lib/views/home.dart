@@ -85,7 +85,7 @@ class HomeView extends StatelessWidget {
               if (live) ...[
                 const SizedBox(width: 8),
                 TextBtn(
-                  label: 'Live run',
+                  label: 'Run monitor',
                   kind: BtnKind.primary,
                   onPressed: onLive,
                 ),
