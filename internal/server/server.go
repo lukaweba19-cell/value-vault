@@ -349,7 +349,11 @@ func HandleStart(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	pausedAccum = 0
 	rateSamples = nil
 	endedAt = time.Time{}
-	status = fmt.Sprintf("Running — %d workers · %s", wc, filepath.Base(combo))
+	proxyDesc := "direct (no proxy)"
+	if len(proxies) > 0 {
+		proxyDesc = fmt.Sprintf("%d proxies", len(proxies))
+	}
+	status = fmt.Sprintf("Running — %d workers · %s · %s", wc, filepath.Base(combo), proxyDesc)
 	mu.Unlock()
 
 	ch := make(chan ProgressEvent, 50000)

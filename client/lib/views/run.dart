@@ -241,11 +241,22 @@ class _RunViewState extends State<RunView> {
             hint: '${logs.length} lines',
             controller: _logsCtrl,
             lines: logs,
-            colorOf: (l) => RegExp(r'\[HIT\]|\[Free Hit\]|\[Private Hit\]',
-                    caseSensitive: false)
-                .hasMatch(l)
-                ? const Color(0xFF9AF0C8)
-                : const Color(0xFFF5A8A8),
+            colorOf: (l) {
+              // Green = hit, amber = retry/skip notes (not results),
+              // red = failures. A wall of red retry lines would look the
+              // same as real failures and hides what is actually going on.
+              if (RegExp(r'\[HIT\]|\[Free Hit\]|\[Private Hit\]',
+                      caseSensitive: false)
+                  .hasMatch(l)) {
+                return const Color(0xFF9AF0C8);
+              }
+              if (RegExp(r'^\[RETRY\]|^\[SKIP\]|^\[INFO\]',
+                      caseSensitive: false)
+                  .hasMatch(l)) {
+                return const Color(0xFFFFD48A);
+              }
+              return const Color(0xFFF5A8A8);
+            },
           );
           final hitsPane = _LogPane(
             eyebrow: 'Hits',
