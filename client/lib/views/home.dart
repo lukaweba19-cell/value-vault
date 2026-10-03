@@ -39,37 +39,27 @@ class HomeView extends StatelessWidget {
         ),
         LayoutBuilder(builder: (context, box) {
           final cols = box.maxWidth < 700 ? 1 : 3;
-          return GridView.count(
-            crossAxisCount: cols,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            crossAxisSpacing: 12,
-            mainAxisSpacing: 12,
-            // Sized to the card's content (~150px) so the cards stop
-            // carrying a large empty bottom half.
-            childAspectRatio: cols == 1 ? 3.4 : 2.2,
-            children: [
-              ChoiceCard(
-                icon: const IcoBox(child: IconNew(size: 18)),
-                title: 'Start new',
-                desc: 'New combo list, proxies, keywords and workers.',
-                onTap: onNew,
-              ),
-              ChoiceCard(
-                icon: const IcoBox(child: IconResume(size: 18)),
-                title: 'Resume session',
-                desc:
-                    'Pick a saved session and continue unfinished lines + retries.',
-                onTap: onResume,
-              ),
-              ChoiceCard(
-                icon: const IcoBox(child: IconEditor(size: 18)),
-                title: 'Editor',
-                desc: 'Build, clean, extract and export combo lists.',
-                onTap: onEditor,
-              ),
-            ],
-          );
+          return _cardsGrid(cols, [
+            ChoiceCard(
+              icon: const IcoBox(child: IconNew(size: 18)),
+              title: 'Start new',
+              desc: 'New combo list, proxies, keywords and workers.',
+              onTap: onNew,
+            ),
+            ChoiceCard(
+              icon: const IcoBox(child: IconResume(size: 18)),
+              title: 'Resume session',
+              desc:
+                  'Pick a saved session and continue unfinished lines + retries.',
+              onTap: onResume,
+            ),
+            ChoiceCard(
+              icon: const IcoBox(child: IconEditor(size: 18)),
+              title: 'Editor',
+              desc: 'Build, clean, extract and export combo lists.',
+              onTap: onEditor,
+            ),
+          ]);
         }),
         const SizedBox(height: 16),
         Container(
@@ -104,32 +94,55 @@ class HomeView extends StatelessWidget {
         SectionHead(eyebrow: 'Community', title: 'Stay in the loop'),
         LayoutBuilder(builder: (context, box) {
           final cols = box.maxWidth < 700 ? 1 : 2;
-          return GridView.count(
-            crossAxisCount: cols,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            crossAxisSpacing: 12,
-            mainAxisSpacing: 12,
-            childAspectRatio: cols == 1 ? 3.4 : 3.2,
-            children: [
-              ChoiceCard(
-                icon: const IcoBox(tg: true, child: TgMark(size: 42, gid: 'tgA')),
-                title: 'Tools & Updates',
-                desc: 'Go here for tools, updates, and new releases.',
-                onTap: () => openLink('https://t.me/+naqymNMpt75jYjdh'),
-              ),
-              ChoiceCard(
-                icon: const IcoBox(tg: true, child: TgMark(size: 42, gid: 'tgB')),
-                title: 'Chat',
-                desc: 'Go here to chat with everyone in the community.',
-                onTap: () => openLink('https://t.me/+cueTzd36nb9jNWQx'),
-              ),
-            ],
-          );
+          return _cardsGrid(cols, [
+            ChoiceCard(
+              icon: const IcoBox(tg: true, child: TgMark(size: 42, gid: 'tgA')),
+              title: 'Tools & Updates',
+              desc: 'Go here for tools, updates, and new releases.',
+              onTap: () => openLink('https://t.me/+naqymNMpt75jYjdh'),
+            ),
+            ChoiceCard(
+              icon: const IcoBox(tg: true, child: TgMark(size: 42, gid: 'tgB')),
+              title: 'Chat',
+              desc: 'Go here to chat with everyone in the community.',
+              onTap: () => openLink('https://t.me/+cueTzd36nb9jNWQx'),
+            ),
+          ]);
         }),
       ],
     );
   }
+}
+
+/// Lays choice cards out in `cols` equal columns, stacked when there is only
+/// one. Replaces the old GridView.count aspect-ratio cells: those pinned each
+/// cell to width/ratio, so whenever the description wrapped to a second line
+/// (narrow/minimized window) the text painted outside the card border. Cards
+/// now size to their own content while staying equal height within a row.
+Widget _cardsGrid(int cols, List<Widget> cards) {
+  const gap = 12.0;
+  if (cols <= 1) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (var i = 0; i < cards.length; i++) ...[
+          if (i > 0) const SizedBox(height: gap),
+          cards[i],
+        ],
+      ],
+    );
+  }
+  return IntrinsicHeight(
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (var i = 0; i < cards.length; i++) ...[
+          if (i > 0) const SizedBox(width: gap),
+          Expanded(child: cards[i]),
+        ],
+      ],
+    ),
+  );
 }
 
 /* ---------------- resume ---------------------------------------------------- */

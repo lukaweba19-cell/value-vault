@@ -539,6 +539,11 @@ func HandleList(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "email": req.Email, "messages": msgs, "count": len(msgs), "total": total, "from": req.From, "size": req.Size, "more": more})
 }
 
+// connectBudget bounds one whole sign-in (all proxies, all HTTP steps).
+// Dead proxies otherwise stall the stream for many minutes and the UI spins
+// forever; when it elapses the stream still ends with a terminal done frame.
+const connectBudget = 150 * time.Second
+
 // HandleConnect streams the sign-in as NDJSON progress lines so the UI can
 // animate proxies being tried and token steps. Request body is the same
 // {email,password,proxy,proxy_mode,proxy_urls} shape as /api/mail/list.
@@ -583,17 +588,58 @@ func HandleConnect(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	if len(tryPx) > 5 {
 		tryPx = tryPx[:5]
 	}
+	// Exactly one terminal done line per stream — the UI reports a generic
+	// "connection ended unexpectedly" when the stream ends without one, so
+	// every exit path (early return, timeout, panic) funnels through finish.
+	sentDone := false
+	finish := func(m map[string]any) {
+		sentDone = true
+		writeNDJSON(w, m)
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			// Re-raise so serveSafe logs the stack and writes its own
+			// terminal frame — the cause must reach solo-launch.log.
+			panic(rec)
+		}
+		if !sentDone {
+			finish(map[string]any{"type": "done", "ok": false,
+				"error": "sign-in ended without a result — see solo-launch.log"})
+		}
+	}()
 	// writeNDJSON flushes after every line, so the UI sees each step live.
 	writeNDJSON(w, map[string]any{"type": "start", "proxies": len(tryPx)})
-	msgs, err := ConnectMailbox(email, req.Password, tryPx,
-		func(stage string) {
-			writeNDJSON(w, map[string]any{"type": "stage", "stage": stage})
-		},
-		func(res ConnResult) {
-			writeNDJSON(w, map[string]any{"type": "try", "proxy": res.Proxy, "stage": res.Stage, "ok": res.Ok, "err": res.Err, "start": res.Start})
-		})
+	type connRes struct {
+		msgs []Msg
+		err  error
+	}
+	resCh := make(chan connRes, 1) // buffered: the attempt may outlive the stream
+	go func() {
+		ms, err := ConnectMailbox(email, req.Password, tryPx,
+			func(stage string) {
+				writeNDJSON(w, map[string]any{"type": "stage", "stage": stage})
+			},
+			func(res ConnResult) {
+				writeNDJSON(w, map[string]any{"type": "try", "proxy": res.Proxy, "stage": res.Stage, "ok": res.Ok, "err": res.Err, "start": res.Start})
+			})
+		resCh <- connRes{ms, err}
+	}()
+	var msgs []Msg
+	var err error
+	select {
+	case got := <-resCh:
+		msgs, err = got.msgs, got.err
+	case <-time.After(connectBudget):
+		// End the stream instead of loading forever. The attempt keeps
+		// running in the background (its late writes fail once the stream
+		// closes), so a token that arrives just after the cutoff is still
+		// remembered for the retry.
+		finish(map[string]any{"type": "done", "ok": false,
+			"error": "sign-in timed out — the proxies look dead; retry, change proxies or use direct"})
+		return
+	}
 	if err != nil {
-		writeNDJSON(w, map[string]any{"type": "done", "ok": false, "error": err.Error()})
+		finish(map[string]any{"type": "done", "ok": false, "error": err.Error()})
 		return
 	}
 	// Success: hand the UI the first page so it doesn't need a second round-trip.
@@ -604,7 +650,7 @@ func HandleConnect(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	if total > 0 {
 		more = len(msgs) < total
 	}
-	writeNDJSON(w, map[string]any{"type": "done", "ok": true, "email": email, "messages": msgs, "count": len(msgs), "total": total, "more": more})
+	finish(map[string]any{"type": "done", "ok": true, "email": email, "messages": msgs, "count": len(msgs), "total": total, "more": more})
 }
 
 func writeNDJSON(w stdhttp.ResponseWriter, v any) {

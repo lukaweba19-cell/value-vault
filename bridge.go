@@ -81,6 +81,16 @@ type streamWriter struct {
 	cb  C.solo_cb
 }
 
+// Write hands the chunk buffer to Dart and does NOT free it.
+//
+// NativeCallable.listener invocations run asynchronously: solo_emit only
+// queues the call, so the UI isolate may read cs seconds later. Freeing it
+// here was a use-after-free — the bytes could be recycled by the next emit
+// (or any other cgo allocation) before Dart copies them out, silently
+// corrupting or dropping stream lines. That is how the mail viewer lost its
+// terminal "done" frame and showed "connection ended unexpectedly".
+// Ownership now transfers to Dart, which releases the buffer through
+// SoloRelease after copying the bytes (see client/lib/api.dart _onChunk).
 func (w *streamWriter) Write(p []byte) (int, error) {
 	if err := w.ctx.Err(); err != nil {
 		return 0, err
@@ -90,8 +100,11 @@ func (w *streamWriter) Write(p []byte) (int, error) {
 	}
 	s := string(p)
 	cs := C.CString(s)
+	if w.cb == nil { // nobody to hand it to — keep the old contract
+		C.free(unsafe.Pointer(cs))
+		return len(p), nil
+	}
 	C.solo_emit(w.cb, C.longlong(w.id), cs, C.int(len(s)))
-	C.free(unsafe.Pointer(cs))
 	return len(p), nil
 }
 
@@ -212,6 +225,21 @@ func SoloCancel(id C.longlong) {
 //
 //export SoloFree
 func SoloFree(p *C.char) {
+	if p != nil {
+		C.free(unsafe.Pointer(p))
+	}
+}
+
+// SoloRelease releases a stream chunk buffer after Dart has copied it out
+// (streamWriter.Write hands ownership of every chunk to Dart).
+//
+// Deliberately a separate export from SoloFree: a client built before this
+// export still frees chunks itself, and on such an engine the Dart lookup
+// fails — instead of registering SoloFree here (which would make the new
+// client double-free an old engine's buffers).
+//
+//export SoloRelease
+func SoloRelease(p *C.char) {
 	if p != nil {
 		C.free(unsafe.Pointer(p))
 	}

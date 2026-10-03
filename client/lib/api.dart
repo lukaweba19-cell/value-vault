@@ -38,6 +38,11 @@ typedef _SoloInitNative = Void Function();
 typedef _SoloInitDart = void Function();
 typedef _SoloCancelNative = Void Function(Int64);
 typedef _SoloCancelDart = void Function(int);
+// Stream chunks are handed to Dart by the engine (bridge.go
+// streamWriter.Write) and must be released by us once copied out —
+// NativeCallable.listener runs asynchronously, so Go may not free them.
+typedef _SoloReleaseNative = Void Function(Pointer<Utf8>);
+typedef _SoloReleaseDart = void Function(Pointer<Utf8>);
 typedef _ChunkNative = Void Function(
     Int64 id, Pointer<Utf8> data, Int32 len);
 typedef _SoloStreamNative = Void Function(
@@ -145,17 +150,46 @@ class Api {
   static final Map<int, StreamController<String>> _streams = {};
   static int _streamSeq = 0;
   static NativeCallable<_ChunkNative>? _chunkCb;
+  static _SoloReleaseDart? _releaseFn;
+  static bool _releaseResolved = false;
+
+  /// Frees a Go-owned chunk buffer once its bytes are copied out. On an
+  /// engine that predates SoloRelease the lookup fails and the engine keeps
+  /// freeing chunks itself (never both — that would double-free).
+  static void _releaseChunk(Pointer<Utf8> p) {
+    if (!_releaseResolved) {
+      _releaseResolved = true;
+      try {
+        _releaseFn = _lib()
+            .lookupFunction<_SoloReleaseNative, _SoloReleaseDart>(
+                'SoloRelease');
+      } catch (_) {/* older engine frees stream chunks itself */}
+    }
+    try {
+      _releaseFn?.call(p);
+    } catch (_) {/* engine already gone */}
+  }
 
   static void _onChunk(int id, Pointer<Utf8> data, int len) {
-    final ctl = _streams[id];
-    if (ctl == null) return;
     if (data.address == 0) {
-      _streams.remove(id);
-      if (!ctl.isClosed) ctl.close();
-    } else {
-      try {
-        ctl.add(data.toDartString());
-      } catch (_) {/* controller already cancelled */}
+      final ctl = _streams.remove(id);
+      if (ctl != null && !ctl.isClosed) ctl.close();
+      return;
+    }
+    // The engine transferred ownership of this buffer: copy the bytes out,
+    // then release it. NativeCallable.listener runs asynchronously, so
+    // reading without holding the buffer races the next emit and can
+    // silently corrupt or drop stream lines (the mail viewer's missing
+    // terminal "done" frame).
+    try {
+      final chunk = len > 0 ? data.toDartString(length: len) : null;
+      if (chunk != null) {
+        final ctl = _streams[id];
+        if (ctl != null && !ctl.isClosed) ctl.add(chunk);
+      }
+    } catch (_) {/* controller already cancelled or malformed chunk */}
+    finally {
+      _releaseChunk(data);
     }
   }
 
