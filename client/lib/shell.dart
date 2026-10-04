@@ -104,6 +104,20 @@ class _AppShellState extends State<AppShell> {
     setState(() => _view = v);
   }
 
+  void _navTo(String v) {
+    if (v == 'setup') {
+      newSession();
+    } else {
+      setView(v);
+    }
+  }
+
+  void _openViewer() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const ViewerScreen()),
+    );
+  }
+
   void newSession() {
     form.reset();
     proxyKind = 'file';
@@ -175,46 +189,69 @@ class _AppShellState extends State<AppShell> {
   @override
   Widget build(BuildContext context) {
     final wide = _view == 'setup' || _view == 'run' || _view == 'editor';
+    // Phone / portrait-tablet layout: a fixed 252px sidebar plus the desktop
+    // content measure squeezed the form into a ~70px clipped column, and the
+    // topbar sat under the iOS status bar. Below this breakpoint navigation
+    // moves into a drawer and the content column runs full width — desktop
+    // (>= 900px, the Windows window opens at 1280) is untouched.
+    final size = MediaQuery.sizeOf(context);
+    final compact = size.width < 900;
     return Scaffold(
+      drawer: compact
+          ? Drawer(
+              backgroundColor: Colors.transparent,
+              child: SafeArea(
+                child: SingleChildScrollView(
+                  child: _SideBar(
+                    view: _view,
+                    uid: uid,
+                    fill: true,
+                    onNav: (v) {
+                      Navigator.of(context).pop();
+                      _navTo(v);
+                    },
+                    onOpenViewer: () {
+                      Navigator.of(context).pop();
+                      _openViewer();
+                    },
+                  ),
+                ),
+              ),
+            )
+          : null,
       body: appBackdrop(
         Column(
           children: [
-            _TopBar(live: live, viewLabel: _viewLabel),
+            _TopBar(live: live, viewLabel: _viewLabel, showMenu: compact),
             Expanded(
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _SideBar(
-                    view: _view,
-                    uid: uid,
-                    onNav: (v) {
-                      if (v == 'setup') {
-                        newSession();
-                      } else {
-                        setView(v);
-                      }
-                    },
-                    onOpenViewer: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                            builder: (_) => const ViewerScreen()),
-                      );
-                    },
-                  ),
+                  if (!compact)
+                    _SideBar(
+                      view: _view,
+                      uid: uid,
+                      onNav: _navTo,
+                      onOpenViewer: _openViewer,
+                    ),
                   Expanded(
                     child: SingleChildScrollView(
-                      padding: const EdgeInsets.fromLTRB(2, 18, 2, 40),
+                      padding: EdgeInsets.fromLTRB(
+                          2, compact ? 14 : 18, 2, compact ? 32 : 40),
                       child: Center(
                         child: ConstrainedBox(
                           constraints: BoxConstraints(
-                            maxWidth: wide
-                                ? 1480
-                                : MediaQuery.of(context).size.width < 1160
-                                    ? MediaQuery.of(context).size.width - 320
-                                    : 1040,
+                            maxWidth: compact
+                                ? size.width
+                                : wide
+                                    ? 1480
+                                    : size.width < 1160
+                                        ? size.width - 320
+                                        : 1040,
                           ),
                           child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 22),
+                            padding: EdgeInsets.symmetric(
+                                horizontal: compact ? 14 : 22),
                             child: _buildView(),
                           ),
                         ),
@@ -281,19 +318,35 @@ class _AppShellState extends State<AppShell> {
 class _TopBar extends StatelessWidget {
   final bool live;
   final String viewLabel;
-  const _TopBar({required this.live, required this.viewLabel});
+  final bool showMenu;
+  const _TopBar(
+      {required this.live, required this.viewLabel, this.showMenu = false});
 
   @override
   Widget build(BuildContext context) {
+    // Grow behind the iOS status bar so the clock never overlaps the title
+    // (the inset is 0 on Windows, so the desktop bar stays 46px tall).
+    final topInset = MediaQuery.paddingOf(context).top;
     return Container(
-      height: 46,
-      padding: const EdgeInsets.symmetric(horizontal: 16),
+      height: 46 + topInset,
+      padding:
+          EdgeInsets.only(top: topInset, left: showMenu ? 6 : 16, right: 16),
       decoration: const BoxDecoration(
         color: Color(0xEB090C13),
         border: Border(bottom: BorderSide(color: T.line)),
       ),
       child: Row(
         children: [
+          if (showMenu) ...[
+            IconButton(
+              onPressed: () => Scaffold.maybeOf(context)?.openDrawer(),
+              icon: const Icon(Icons.menu, size: 20, color: T.txt),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+              tooltip: 'Menu',
+            ),
+            const SizedBox(width: 2),
+          ],
           Container(
             width: 22,
             height: 22,
@@ -309,12 +362,16 @@ class _TopBar extends StatelessWidget {
               errorBuilder: (_, _, _) => const XboxMark(size: 15),
             ),
           ),
-          const SizedBox(width: 9),
-          Text('SOLO Checker',
-              style: TextStyle(
-                  fontSize: 13, fontWeight: FontWeight.w600, color: T.mut)),
-          const SizedBox(width: 9),
-          const Text('/', style: TextStyle(fontSize: 13, color: Color(0xFF46536E))),
+          // Compact (phone): skip the brand lockup so the page title and
+          // status pill always fit — the brand lives in the drawer there.
+          if (!showMenu) ...[
+            const SizedBox(width: 9),
+            Text('SOLO Checker',
+                style: TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w600, color: T.mut)),
+            const SizedBox(width: 9),
+            const Text('/', style: TextStyle(fontSize: 13, color: Color(0xFF46536E))),
+          ],
           const SizedBox(width: 9),
           Expanded(
             child: Text(
@@ -338,20 +395,26 @@ class _SideBar extends StatelessWidget {
   final String uid;
   final ValueChanged<String> onNav;
   final VoidCallback onOpenViewer;
+  // fill = rendered inside the navigation drawer on compact (phone) layouts:
+  // full width, full labels, no desktop card margin.
+  final bool fill;
   const _SideBar({
     required this.view,
     required this.uid,
     required this.onNav,
     required this.onOpenViewer,
+    this.fill = false,
   });
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (context, box) {
-      final narrow = box.maxWidth < 760;
+      final narrow = !fill && box.maxWidth < 760;
       return Container(
-        width: narrow ? 74 : 252,
-        margin: const EdgeInsets.fromLTRB(16, 18, 0, 0),
+        width: fill ? double.infinity : (narrow ? 74 : 252),
+        margin: fill
+            ? const EdgeInsets.all(14)
+            : const EdgeInsets.fromLTRB(16, 18, 0, 0),
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
           color: const Color(0xEB10141F),
@@ -493,11 +556,17 @@ class _SideBar extends StatelessWidget {
                           const TgMark(size: 18, gid: 'tgSide'),
                           const SizedBox(width: 8),
                           if (!narrow)
-                            const Text('@solodolosouls',
-                                style: TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w700,
-                                    color: T.blu)),
+                            // Flexible: long handles (or wide test fonts)
+                            // ellipsize instead of overflowing the card.
+                            Flexible(
+                              child: Text('@solodolosouls',
+                                  overflow: TextOverflow.ellipsis,
+                                  maxLines: 1,
+                                  style: const TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w700,
+                                      color: T.blu)),
+                            ),
                         ],
                       ),
                     ),
@@ -663,10 +732,13 @@ class _StatusBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final small = MediaQuery.of(context).size.width < 720;
+    final mq = MediaQuery.of(context);
+    final small = mq.size.width < 720;
+    // Keep the row above the iPhone home indicator (inset is 0 on Windows).
+    final bottomInset = mq.padding.bottom;
     return Container(
-      height: 30,
-      padding: const EdgeInsets.symmetric(horizontal: 16),
+      height: 30 + bottomInset,
+      padding: EdgeInsets.only(left: 16, right: 16, bottom: bottomInset),
       decoration: const BoxDecoration(
         color: Color(0xF0090C13),
         border: Border(top: BorderSide(color: T.line)),

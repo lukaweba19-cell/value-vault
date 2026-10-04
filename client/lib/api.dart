@@ -11,6 +11,7 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:ffi/ffi.dart';
+import 'package:flutter/services.dart';
 
 // Legacy labels: the `base:` parameters the views pass around are kept for
 // API compatibility, but routing happens on the engine's single in-process
@@ -107,7 +108,35 @@ String _ffiCall(String method, String path, String body) {
 class Api {
   static bool _isErr(int code) => code < 200 || code >= 300;
 
+  // iOS native document picker (Runner AppDelegate). The Go engine's file
+  // dialog is Windows-only, so Browse would silently do nothing on iOS.
+  static const MethodChannel _iosPicker =
+      MethodChannel('com.solodolosouls.soloChecker/filePicker');
+
+  static Future<ApiRes> _nativePick() async {
+    try {
+      final picked = await _iosPicker.invokeMethod<String>('pickFile');
+      if (picked == null || picked.isEmpty) {
+        return ApiRes(ok: false, status: 0, text: 'cancelled');
+      }
+      return ApiRes(ok: true, status: 200, data: {'path': picked});
+    } on PlatformException catch (e) {
+      return ApiRes(ok: false, status: 0, text: e.message ?? 'picker failed');
+    } catch (e) {
+      return ApiRes(ok: false, status: 0, text: '$e');
+    }
+  }
+
   static Future<ApiRes> _call(String method, String path, String body) async {
+    // Open-file picks run through Apple's document picker on iOS.
+    // `/api/pick-save` is deliberately left to the engine: it answers with
+    // a default export filename, which resolves under Documents/ (the iOS
+    // CWD) — there is no dialog to show there.
+    if (Platform.isIOS &&
+        method == 'GET' &&
+        (path == '/api/pick' || path.startsWith('/api/pick?'))) {
+      return _nativePick();
+    }
     try {
       final future = Isolate.run(() => _ffiCall(method, path, body));
       // Native file dialogs may stay open indefinitely; everything else is

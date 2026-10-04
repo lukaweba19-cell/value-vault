@@ -582,6 +582,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
   Widget build(BuildContext context) {
     final s = _stats;
     final file = '${s['file_path'] ?? 'valid.txt'}';
+    final pad = MediaQuery.sizeOf(context).width < 720 ? 14.0 : 24.0;
     return Scaffold(
       body: appBackdrop(
         Stack(
@@ -591,7 +592,7 @@ class _ViewerScreenState extends State<ViewerScreen> {
                 _topBar(context),
                 Expanded(
                   child: SingleChildScrollView(
-                    padding: const EdgeInsets.fromLTRB(24, 22, 24, 40),
+                    padding: EdgeInsets.fromLTRB(pad, 22, pad, 40),
                     child: Center(
                       child: ConstrainedBox(
                         constraints: const BoxConstraints(maxWidth: 1180),
@@ -658,9 +659,11 @@ class _ViewerScreenState extends State<ViewerScreen> {
   }
 
   Widget _topBar(BuildContext context) {
+    // Grow behind the iOS status bar (inset is 0 elsewhere).
+    final topInset = MediaQuery.paddingOf(context).top;
     return Container(
-      height: 46,
-      padding: const EdgeInsets.symmetric(horizontal: 16),
+      height: 46 + topInset,
+      padding: EdgeInsets.only(top: topInset, left: 16, right: 16),
       decoration: const BoxDecoration(
         color: Color(0xEB090C13),
         border: Border(bottom: BorderSide(color: T.line)),
@@ -747,13 +750,16 @@ class _ViewerScreenState extends State<ViewerScreen> {
   }
 
   Widget _controls() {
-    return Wrap(
+    return LayoutBuilder(builder: (context, box) {
+      // The 340px search box overflows the narrowest phones — clamp it.
+      final searchW = box.maxWidth < 340 ? box.maxWidth : 340.0;
+      return Wrap(
       spacing: 8,
       runSpacing: 8,
       crossAxisAlignment: WrapCrossAlignment.center,
       children: [
         SizedBox(
-          width: 340,
+          width: searchW,
           child: TextField(
             style: const TextStyle(fontSize: 13.5, color: T.txt),
             decoration: fieldInputDecoration(
@@ -811,7 +817,8 @@ class _ViewerScreenState extends State<ViewerScreen> {
         TextBtn(label: 'Filter', kind: BtnKind.primary, onPressed: _search),
         TextBtn(label: 'Clear', kind: BtnKind.secondary, onPressed: _clear),
       ],
-    );
+      );
+    });
   }
 
   Widget _chipRow() {
@@ -919,27 +926,33 @@ class _ViewerScreenState extends State<ViewerScreen> {
         child: Center(child: Muted('No accounts match your filters.', size: 13)),
       );
     }
-    return Wrap(
-      spacing: 14,
-      runSpacing: 14,
-      children: [
-        for (final a in _accounts)
-          SizedBox(
-            width: 380,
-            child: _AccountCard(
-              a: a,
-              onToast: _toastMsg,
-              onMail: (acc) => setState(() => _mailAcc = acc),
+    return LayoutBuilder(builder: (context, box) {
+      // Fixed 380px cards overflow a phone-width column — shrink to fit.
+      final cardW = box.maxWidth < 380 ? box.maxWidth : 380.0;
+      return Wrap(
+        spacing: 14,
+        runSpacing: 14,
+        children: [
+          for (final a in _accounts)
+            SizedBox(
+              width: cardW,
+              child: _AccountCard(
+                a: a,
+                onToast: _toastMsg,
+                onMail: (acc) => setState(() => _mailAcc = acc),
+              ),
             ),
-          ),
-      ],
-    );
+        ],
+      );
+    });
   }
 
   Widget _statusBar(String file) {
+    // Keep the row above the iPhone home indicator (inset is 0 elsewhere).
+    final bottomInset = MediaQuery.paddingOf(context).bottom;
     return Container(
-      height: 30,
-      padding: const EdgeInsets.symmetric(horizontal: 16),
+      height: 30 + bottomInset,
+      padding: EdgeInsets.only(left: 16, right: 16, bottom: bottomInset),
       decoration: const BoxDecoration(
         color: Color(0xF0090C13),
         border: Border(top: BorderSide(color: T.line)),
@@ -1802,7 +1815,8 @@ class _MailViewerState extends State<MailViewer> {
       fit: StackFit.expand,
       children: [
         Container(color: const Color(0xCC03050A)),
-        _buildStage(context),
+        // Keep stage cards clear of the status bar / home indicator.
+        SafeArea(child: _buildStage(context)),
         if (_delAsk != null) _deleteModal(context),
       ],
     );
