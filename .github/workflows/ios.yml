@@ -1,0 +1,201 @@
+name: iOS
+
+# Builds the unsigned iPhone IPA on every push to main:
+#   1. build job (macos-15):
+#        - Go checks (same gates as the Windows release workflow),
+#        - the Go engine compiled as a STATIC c-archive for iphoneos
+#          (GOOS=ios GOARCH=arm64 + the iphoneos clang) at
+#          client/ios/solo_libs/libsolo.a — the Podfile force-loads it into
+#          the Runner binary, so dart:ffi finds the Solo* exports through
+#          DynamicLibrary.process() (client/lib/api.dart). No dylib to embed,
+#          nothing extra to sign.
+#        - Flutter checks, then `flutter build ios --release --no-codesign`.
+#        - Verifies the Solo* exports actually landed in the linked app
+#          binary (nm), then zips Runner.app into iOS-test/solo-checker.ipa
+#          (just the IPA — no manifest, no R2).
+#   2. The IPA is committed back to main with [skip ci] (mirrors how the
+#      Windows build refreshes dist-test/) and uploaded as a workflow
+#      artifact for download.
+#
+# The IPA is unsigned on purpose: re-sign it with your usual tooling
+# (AltStore/Sideloadly/Apple Developer) before installing on a device.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Go checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          fmt_out="$(gofmt -l .)"
+          if [ -n "$fmt_out" ]; then
+            echo "gofmt needed on:" >&2
+            echo "$fmt_out" >&2
+            exit 1
+          fi
+          go vet ./...
+          go test ./...
+
+      - name: Build Go engine c-archive for iOS
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          CC="$(xcrun --sdk iphoneos --find clang)"
+          echo "iphoneos SDK: $SDK"
+          echo "clang: $CC"
+          mkdir -p client/ios/solo_libs
+          # GOOS=ios GOARCH=arm64 cross-build with the iphoneos toolchain:
+          # the engine becomes a static archive Xcode links into the app
+          # binary itself (no dynamic library, no embedded framework — the
+          # archive must survive the link whole, which the Podfile arranges
+          # with -force_load + STRIP/DEAD_CODE stripping disabled).
+          CC="$CC" \
+          CGO_ENABLED=1 GOOS=ios GOARCH=arm64 \
+          CGO_CFLAGS="-arch arm64 -isysroot $SDK -miphoneos-version-min=15.0" \
+          CGO_LDFLAGS="-arch arm64 -isysroot $SDK -miphoneos-version-min=15.0" \
+          go build -trimpath -buildmode=c-archive -o client/ios/solo_libs/libsolo.a .
+          # The generated C header is not needed — Dart resolves the exports
+          # by name at runtime.
+          rm -f client/ios/solo_libs/libsolo.h
+          ls -la client/ios/solo_libs
+          # The six FFI exports must be present in the archive. (nm output
+          # goes to a file first: `nm | grep -q` under pipefail can die of
+          # SIGPIPE and report a false failure.)
+          nm -gU client/ios/solo_libs/libsolo.a > /tmp/solo_archive_syms.txt
+          for s in SoloInit SoloCall SoloStream SoloCancel SoloFree SoloRelease; do
+            if ! grep -qE " _$s\$" /tmp/solo_archive_syms.txt; then
+              echo "missing c-archive export: $s" >&2
+              exit 1
+            fi
+          done
+          echo "all Solo* exports present in libsolo.a"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.6'
+          channel: stable
+          cache: true
+
+      - name: Flutter checks
+        shell: bash
+        working-directory: client
+        run: |
+          set -euo pipefail
+          flutter pub get
+          flutter analyze
+          flutter test
+
+      - name: Build Flutter iOS app (no code signing)
+        shell: bash
+        working-directory: client
+        run: |
+          set -euo pipefail
+          # --no-codesign: flutter skips the export step that would need
+          # certificates; the unsigned Runner.app is what we package below.
+          flutter build ios --release --no-codesign
+
+      - name: Verify the engine is linked into the app binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="client/build/ios/iphoneos/Runner.app/Runner"
+          test -f "$bin"
+          test -f "client/build/ios/iphoneos/Runner.app/Info.plist"
+          # End-to-end check: dart:ffi resolves these through dlsym on the
+          # process image, so if the link/strip settings ever regress, this
+          # step fails instead of shipping an app whose engine is missing.
+          nm -gU "$bin" > /tmp/solo_runner_syms.txt || {
+            echo "nm failed on the Runner binary" >&2
+            exit 1
+          }
+          for s in SoloInit SoloCall SoloStream SoloCancel SoloFree SoloRelease; do
+            if ! grep -qE " _$s\$" /tmp/solo_runner_syms.txt; then
+              echo "export $s missing from the linked Runner binary" >&2
+              head -40 /tmp/solo_runner_syms.txt >&2 || true
+              exit 1
+            fi
+          done
+          echo "all Solo* exports present in Runner binary"
+
+      - name: Package unsigned IPA into iOS-test/
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Exactly one file in iOS-test/: the IPA (no manifest, no extras).
+          rm -rf iOS-test
+          mkdir -p iOS-test/Payload
+          cp -R client/build/ios/iphoneos/Runner.app iOS-test/Payload/
+          ( cd iOS-test && zip -qry solo-checker.ipa Payload )
+          rm -rf iOS-test/Payload
+          test -s iOS-test/solo-checker.ipa
+          # Listing goes to a file first (pipefail vs early-exit grep).
+          unzip -l iOS-test/solo-checker.ipa > /tmp/ipa_listing.txt
+          grep -q "Payload/Runner.app/Info.plist" /tmp/ipa_listing.txt
+          grep -q "Payload/Runner.app/Runner" /tmp/ipa_listing.txt
+          ls -la iOS-test
+          echo "IPA ready: $(du -h iOS-test/solo-checker.ipa | cut -f1)"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: solo-checker-ios
+          path: iOS-test/solo-checker.ipa
+          if-no-files-found: error
+
+      - name: Commit IPA to main
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add iOS-test/solo-checker.ipa
+          if git diff --cached --quiet; then
+            echo "iOS-test IPA is already up to date"
+            exit 0
+          fi
+          git commit -m "iOS build: unsigned solo-checker.ipa [skip ci]"
+          # pod install + xcodebuild rewrite tracked project files (Podfile
+          # xcconfig includes, Runner.xcodeproj, Flutter xcconfigs). Restore
+          # them to the committed state so the rebase pull has a clean tree —
+          # build outputs and solo_libs/ are ignored, so they stay put.
+          git checkout -- client/ || true
+          ok=0
+          for i in 1 2 3; do
+            if git pull --rebase origin "${GITHUB_REF_NAME}" && \
+               git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              ok=1
+              break
+            fi
+            echo "push attempt ${i} failed — retrying in $((i*5))s"
+            sleep $((i*5))
+          done
+          if [ "$ok" != 1 ]; then
+            echo "failed to push iOS-test IPA after 3 attempts" >&2
+            exit 1
+          fi
+          git log --oneline -2

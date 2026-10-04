@@ -151,7 +151,7 @@ class _BootGateState extends State<BootGate> {
               if (_failed) ...[
                 const SizedBox(height: 6),
                 MutedSmall(widget.bootError ??
-                    'solo.dll could not be loaded — reinstall the app.'),
+                    'The engine could not be loaded — reinstall the app.'),
                 const SizedBox(height: 16),
                 TextButton(
                   onPressed: () {

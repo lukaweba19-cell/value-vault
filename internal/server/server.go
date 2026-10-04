@@ -646,9 +646,14 @@ func flag32(b bool) int32 {
 }
 
 func openBrowserPortable(u string) {
-	if runtime.GOOS == "windows" {
+	switch runtime.GOOS {
+	case "windows":
 		_ = exec.Command("rundll32", "url.dll,FileProtocolHandler", u).Start()
-		return
+	case "darwin":
+		// macOS has(1); on iOS the binary is absent and the exec harmlessly
+		// fails — URL opening there belongs to the Flutter layer.
+		_ = exec.Command("open", u).Start()
+	default:
+		_ = exec.Command("xdg-open", u).Start()
 	}
-	_ = exec.Command("xdg-open", u).Start()
 }

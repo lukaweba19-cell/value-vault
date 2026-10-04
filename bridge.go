@@ -148,6 +148,10 @@ func serveSafe(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 //
 //export SoloInit
 func SoloInit() {
+	// iOS first: the app sandbox's bundle root is read-only, so every
+	// relative path the engine writes (sessions, results, tokens) has to
+	// resolve inside Documents/ before anything else touches disk.
+	soloInitWorkDir()
 	r2store.AfterUpdateCleanup()
 	go core.PullQuotaFromCloud()
 }

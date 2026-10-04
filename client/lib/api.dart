@@ -65,6 +65,13 @@ DynamicLibrary _lib() {
   final override = Platform.environment['SOLO_BRIDGE'];
   if (override != null && override.isNotEmpty) {
     _libCache = DynamicLibrary.open(override);
+  } else if (Platform.isIOS) {
+    // iOS: there is no separate engine library to open — the Go engine is
+    // compiled as a c-archive (ios/solo_libs/libsolo.a) and linked straight
+    // into the app binary by Xcode, so the Solo* exports live in the process
+    // image itself. DynamicLibrary.process() resolves them via dlsym on the
+    // main executable.
+    _libCache = DynamicLibrary.process();
   } else if (Platform.isWindows) {
     _libCache = DynamicLibrary.open('solo.dll');
   } else {
