@@ -91,17 +91,27 @@ func RunEngine(cfg Config, progressChan chan ProgressEvent) {
 	retryCount := sync.Map{} // combo -> int
 	triedProxy := sync.Map{} // combo -> map[string]struct{}
 	lastReason := sync.Map{} // line key -> why the last attempt soft-failed
-	// Cap proxy attempts. Walking the whole list made 7k accounts take hours.
+	// Cap proxy attempts so a dead proxy list can never spin a run forever,
+	// but scale the cap with the pool: a flat 3 gave up on accounts the 4th
+	// live proxy would have logged into, marked them done, and resume then
+	// skipped them because they were in DoneRanges.
 	maxProxyTries := 3
-	if len(cfg.Proxies) > 0 && len(cfg.Proxies) < maxProxyTries {
-		maxProxyTries = len(cfg.Proxies)
+	if n := len(cfg.Proxies); n > 0 {
+		maxProxyTries = n
+		if maxProxyTries > 10 {
+			maxProxyTries = 10
+		}
+		if maxProxyTries < 3 {
+			maxProxyTries = 3
+		}
 	}
 
 	retryWant := map[int]bool{}
 	if cfg.Session != nil {
-		for k, n := range cfg.Session.RetryCounts {
-			retryCount.Store(k, n)
-		}
+		// RetryCounts are deliberately NOT restored on resume: a line in the
+		// retry list soft-failed before, and carrying its old count forward
+		// would exhaust the fresh proxy budget immediately. TriedProxies ARE
+		// restored so the same known-dead proxies are not reused.
 		for k, plist := range cfg.Session.TriedProxies {
 			used := map[string]struct{}{}
 			for _, p := range plist {
@@ -114,8 +124,47 @@ func RunEngine(cfg Config, progressChan chan ProgressEvent) {
 		}
 	}
 
+	// clearLineState drops every per-line bookkeeping entry once the line has
+	// a final outcome. inRetry was already deleted on a result, but retryCount,
+	// triedProxy (a map of every proxy used for that line) and lastReason used
+	// to stay in the sync.Maps for the whole run — one entry per soft-failed
+	// line, never removed.
+	clearLineState := func(lk string) {
+		retryCount.Delete(lk)
+		triedProxy.Delete(lk)
+		lastReason.Delete(lk)
+	}
+
+	// parkLine records a line the worker received but cannot finish because
+	// the run is stopping or hit the daily cap. Without this the line was
+	// neither marked done nor written to the session retry list, so resume had
+	// no record of it and it silently vanished from the run.
+	parkLine := func(lineNo int) {
+		lk := LineKey(lineNo)
+		if _, loaded := inRetry.LoadAndDelete(lk); loaded {
+			sendProgress(progressChan, ProgressEvent{IsRetry: true, RetryDelta: -1})
+		}
+		n := 0
+		if v, ok := retryCount.Load(lk); ok {
+			n, _ = v.(int)
+		}
+		used := map[string]struct{}{}
+		if v, ok := triedProxy.Load(lk); ok {
+			if m, ok := v.(map[string]struct{}); ok {
+				used = m
+			}
+		}
+		MarkLinePending(&cfg, lineNo, n, used)
+		atomic.AddInt64(&pending, -1)
+	}
+
 	go func() {
 		scanner := bufio.NewScanner(file)
+		// The default 64KB token cap silently truncated the run: a longer
+		// line errored the scan, the error was ignored, fileDone was set and
+		// every remaining line was never queued — while the run still ended
+		// "done". Raise the cap and surface any scan error in the log.
+		scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 		idx := 0
 		for scanner.Scan() {
 			raw := strings.TrimSpace(scanner.Text())
@@ -140,6 +189,9 @@ func RunEngine(cfg Config, progressChan chan ProgressEvent) {
 			atomic.AddInt64(&firstLeft, 1)
 			hookOnTotal()
 			workCh <- PackWork(idx, raw)
+		}
+		if err := scanner.Err(); err != nil {
+			sendProgress(progressChan, ProgressEvent{LogMsg: fmt.Sprintf("[FATAL] Combo file scan stopped after line %d — remaining lines were NOT checked: %v", idx, err)})
 		}
 		atomic.StoreInt32(&fileDone, 1)
 	}()
@@ -167,6 +219,15 @@ func RunEngine(cfg Config, progressChan chan ProgressEvent) {
 		go func(workerID int) {
 			defer wg.Done()
 			wfp := nettls.NewWorkerFP(workerID)
+			// One reusable timer per worker. The old select armed
+			// time.After(100ms) on every idle wait: each call allocates a
+			// runtime timer that only becomes collectable once it fires — with
+			// 100 workers that is ~10 new resident timers a second per worker.
+			idle := time.NewTimer(time.Hour)
+			if !idle.Stop() {
+				<-idle.C
+			}
+			defer idle.Stop()
 			for {
 				// Exit condition: file fully loaded and nothing left pending
 				if atomic.LoadInt32(&dailyStop) == 1 || atomic.LoadInt32(&stopFlag) == 1 {
@@ -176,19 +237,30 @@ func RunEngine(cfg Config, progressChan chan ProgressEvent) {
 					return
 				}
 
+				if !idle.Stop() {
+					select {
+					case <-idle.C:
+					default:
+					}
+				}
+				idle.Reset(100 * time.Millisecond)
 				var raw string
 				select {
 				case raw = <-workCh:
-				case <-time.After(100 * time.Millisecond):
+				case <-idle.C:
 					continue
 				}
+				// Unpack before the pause wait: the line is already counted in
+				// pending, so a stop arriving during pause must be able to park
+				// it in the session instead of dropping it on the floor.
+				lineNo, combo := UnpackWork(raw)
 				for atomic.LoadInt32(&pauseFlag) == 1 {
 					if atomic.LoadInt32(&dailyStop) == 1 || atomic.LoadInt32(&stopFlag) == 1 {
+						parkLine(lineNo)
 						return
 					}
 					time.Sleep(200 * time.Millisecond)
 				}
-				lineNo, combo := UnpackWork(raw)
 				lk := LineKey(lineNo)
 
 				parts := strings.SplitN(combo, ":", 2)
@@ -197,6 +269,7 @@ func RunEngine(cfg Config, progressChan chan ProgressEvent) {
 					if _, loaded := inRetry.LoadAndDelete(lk); loaded {
 						sendProgress(progressChan, ProgressEvent{IsRetry: true, RetryDelta: -1})
 					}
+					clearLineState(lk)
 					MarkLineDone(&cfg, lineNo)
 					if atomic.LoadInt32(&retryPhase) == 0 {
 						atomic.AddInt64(&firstLeft, -1)
@@ -207,15 +280,17 @@ func RunEngine(cfg Config, progressChan chan ProgressEvent) {
 				email, password := parts[0], parts[1]
 
 				if atomic.LoadInt32(&stopFlag) == 1 {
+					parkLine(lineNo)
 					return
 				}
 				if atomic.LoadInt32(&dailyStop) == 1 || core.AtLimit() {
 					if atomic.CompareAndSwapInt32(&dailyStop, 0, 1) {
 						sendProgress(progressChan, ProgressEvent{LimitHit: true, Daily: core.DailyUsed(), LogMsg: core.LimitMessage()})
 					}
-					retryMu.Lock()
-					retryBuf = append(retryBuf, PackWork(lineNo, combo))
-					retryMu.Unlock()
+					// Record the in-flight line in the session retry list: the
+					// retry pump returns as soon as dailyStop is set, so only
+					// buffering it left no trace for resume.
+					parkLine(lineNo)
 					continue
 				}
 
@@ -239,6 +314,7 @@ func RunEngine(cfg Config, progressChan chan ProgressEvent) {
 					if _, loaded := inRetry.LoadAndDelete(lk); loaded {
 						sendProgress(progressChan, ProgressEvent{IsRetry: true, RetryDelta: -1})
 					}
+					clearLineState(lk)
 					MarkLineDone(&cfg, lineNo)
 					if atomic.LoadInt32(&retryPhase) == 0 {
 						atomic.AddInt64(&firstLeft, -1)
@@ -294,7 +370,13 @@ func RunEngine(cfg Config, progressChan chan ProgressEvent) {
 							}
 						}
 						sendProgress(progressChan, ProgressEvent{LogMsg: failMsg})
-						MarkLineDone(&cfg, lineNo)
+						// Soft failures are not the account's fault: park the line
+						// in the session retry list instead of marking it done, so
+						// a resume retries it with fresh proxies. Previously it
+						// went into DoneRanges, and resume skipped it forever — a
+						// live proxy later in the list never got the chance.
+						MarkLinePending(&cfg, lineNo, n, used)
+						clearLineState(lk)
 						if atomic.LoadInt32(&retryPhase) == 0 {
 							atomic.AddInt64(&firstLeft, -1)
 						}
@@ -327,6 +409,7 @@ func RunEngine(cfg Config, progressChan chan ProgressEvent) {
 				if _, loaded := inRetry.LoadAndDelete(lk); loaded {
 					sendProgress(progressChan, ProgressEvent{IsRetry: true, RetryDelta: -1})
 				}
+				clearLineState(lk)
 				MarkLineDone(&cfg, lineNo)
 				if atomic.LoadInt32(&retryPhase) == 0 {
 					atomic.AddInt64(&firstLeft, -1)
@@ -337,6 +420,10 @@ func RunEngine(cfg Config, progressChan chan ProgressEvent) {
 	}
 
 	wg.Wait()
+	// Workers are done: stop the background proxy health-checkers and drop
+	// the cached pools, otherwise the testPool goroutines and the copied
+	// proxy lists live for the whole process lifetime.
+	proxy.ResetPools()
 	if atomic.LoadInt32(&stopFlag) == 1 {
 		SaveAt(cfg.Session, true)
 	} else if atomic.LoadInt32(&dailyStop) == 0 {

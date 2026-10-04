@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,68 @@ func Load() (*Session, error) {
 
 var lastSessionFlush time.Time
 
+// Session file writes go through a single background writer goroutine. The
+// engine used to marshal + write the (growing) session JSON inline on the
+// worker that just finished a line — every 2s that worker blocked on disk
+// while holding SessMu. Producers hand the writer the newest bytes and move
+// on; force writes wait until the bytes are on disk.
+type sessWrite struct {
+	path   string
+	data   []byte
+	remove bool
+	done   chan struct{}
+}
+
+var (
+	sessWriteCh    = make(chan sessWrite, 1)
+	sessWriterOnce sync.Once
+)
+
+func enqueueSessWrite(w sessWrite) {
+	sessWriterOnce.Do(func() {
+		go func() {
+			for sw := range sessWriteCh {
+				if sw.remove {
+					_ = os.Remove(sw.path)
+				} else {
+					_ = os.MkdirAll(filepath.Dir(sw.path), 0755)
+					_ = os.WriteFile(sw.path, sw.data, 0644)
+				}
+				if sw.done != nil {
+					close(sw.done)
+				}
+			}
+		}()
+	})
+	select {
+	case sessWriteCh <- w:
+		return
+	default:
+	}
+	// Channel holds one stale write: drop it (its bytes are older than ours)
+	// and put ours in its place. Producers are effectively single-threaded
+	// (SaveAt runs under SessMu), so one retry suffices.
+	select {
+	case old := <-sessWriteCh:
+		if old.done != nil {
+			close(old.done)
+		}
+	default:
+	}
+	select {
+	case sessWriteCh <- w:
+	default:
+		if w.remove {
+			_ = os.Remove(w.path)
+		} else {
+			_ = os.WriteFile(w.path, w.data, 0644)
+		}
+		if w.done != nil {
+			close(w.done)
+		}
+	}
+}
+
 func Save(s *Session) {
 	SaveAt(s, false)
 }
@@ -66,19 +129,31 @@ func SaveAt(s *Session, force bool) {
 		}
 		s.File = filepath.Join(core.SessionsDir, fmt.Sprintf("%s-%s.json", strings.TrimSuffix(base, filepath.Ext(base)), time.Now().Format("20060102-150405")))
 	}
-	b, err := json.MarshalIndent(s, "", "  ")
+	// Compact marshal: indented JSON of a large session made every flush more
+	// expensive as DoneRanges/TriedProxies grew.
+	b, err := json.Marshal(s)
 	if err != nil {
 		return
 	}
-	_ = os.MkdirAll(core.SessionsDir, 0755)
-	_ = os.WriteFile(s.File, b, 0644)
+	w := sessWrite{path: s.File, data: b}
+	if force {
+		w.done = make(chan struct{})
+	}
+	enqueueSessWrite(w)
+	if w.done != nil {
+		<-w.done
+	}
 }
 
 func Delete(s *Session) {
 	if s == nil || s.File == "" {
 		return
 	}
-	_ = os.Remove(s.File)
+	// Removal is queued behind any pending write so a still-buffered flush
+	// cannot re-create the file after Delete.
+	w := sessWrite{path: s.File, remove: true, done: make(chan struct{})}
+	enqueueSessWrite(w)
+	<-w.done
 }
 
 func List() []Session {
@@ -117,44 +192,47 @@ func List() []Session {
 
 func LineKey(n int) string { return fmt.Sprintf("%d", n) }
 
+// RangeHas reports whether n falls in any done range. DoneRanges is kept
+// sorted and disjoint by addDoneRange, so a binary search replaces the old
+// linear walk — on a large resume that walk ran for every combo line before
+// it was even queued.
 func RangeHas(ranges []LineRange, n int) bool {
-	for _, r := range ranges {
-		if n >= r.From && n <= r.To {
-			return true
-		}
-	}
-	return false
+	i := sort.Search(len(ranges), func(i int) bool { return ranges[i].To >= n })
+	return i < len(ranges) && n >= ranges[i].From
 }
 
+// addDoneRange inserts n into the sorted, merged range list in O(log k)
+// instead of the previous bubble-sort of the whole list on every done line
+// (quadratic on a big resume).
 func addDoneRange(ranges []LineRange, n int) []LineRange {
-	if n <= 0 || RangeHas(ranges, n) {
+	if n <= 0 {
 		return ranges
 	}
-	ranges = append(ranges, LineRange{From: n, To: n})
-	// sort + merge
-	for i := 0; i < len(ranges); i++ {
-		for j := i + 1; j < len(ranges); j++ {
-			if ranges[j].From < ranges[i].From {
-				ranges[i], ranges[j] = ranges[j], ranges[i]
-			}
-		}
+	i := sort.Search(len(ranges), func(i int) bool { return ranges[i].From > n })
+	// Already covered by the range before the insertion point.
+	if i > 0 && ranges[i-1].To >= n {
+		return ranges
 	}
-	out := make([]LineRange, 0, len(ranges))
-	for _, r := range ranges {
-		if len(out) == 0 {
-			out = append(out, r)
-			continue
-		}
-		last := &out[len(out)-1]
-		if r.From <= last.To+1 {
-			if r.To > last.To {
-				last.To = r.To
+	// Extends the left neighbour; absorb the right neighbour if now adjacent.
+	if i > 0 && ranges[i-1].To == n-1 {
+		ranges[i-1].To = n
+		if i < len(ranges) && ranges[i].From <= n+1 {
+			if ranges[i].To > ranges[i-1].To {
+				ranges[i-1].To = ranges[i].To
 			}
-			continue
+			ranges = append(ranges[:i], ranges[i+1:]...)
 		}
-		out = append(out, r)
+		return ranges
 	}
-	return out
+	// Absorbed by the right neighbour.
+	if i < len(ranges) && ranges[i].From == n+1 {
+		ranges[i].From = n
+		return ranges
+	}
+	ranges = append(ranges, LineRange{})
+	copy(ranges[i+1:], ranges[i:])
+	ranges[i] = LineRange{From: n, To: n}
+	return ranges
 }
 
 func removeRetryLine(lines []int, n int) []int {

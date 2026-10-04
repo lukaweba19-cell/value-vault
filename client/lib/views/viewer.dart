@@ -1201,6 +1201,9 @@ class _MailViewerState extends State<MailViewer> {
   List<Map<String, dynamic>> _mails = [];
   final Map<String, _Pack> _packs = {};
   String _fromFilter = '';
+  // Sender rows are paged: a mailbox with hundreds of senders used to build
+  // every row at once on each rebuild.
+  int _senderLimit = 40;
   String _folder = 'inbox';
   String _query = '';
   String _appliedQuery = 'kind:email';
@@ -2588,7 +2591,7 @@ class _MailViewerState extends State<MailViewer> {
                 _sel = -1;
               }),
             ),
-            for (final k in senderKeys)
+            for (final k in senderKeys.take(_senderLimit))
               _senderItem(
                 avatar: k,
                 title: k,
@@ -2604,6 +2607,15 @@ class _MailViewerState extends State<MailViewer> {
                   if (!_packs.containsKey(k)) _loadSenderPage(k, false);
                 },
               ),
+            if (senderKeys.length > _senderLimit) ...[
+              const SizedBox(height: 4),
+              TextBtn(
+                label:
+                    'Show more senders (${senderKeys.length - _senderLimit})',
+                kind: BtnKind.secondary,
+                onPressed: () => setState(() => _senderLimit += 40),
+              ),
+            ],
             const SizedBox(height: 16),
             const Divider(height: 1, color: T.lineSoft),
             const SizedBox(height: 10),
@@ -3060,7 +3072,16 @@ class _MailViewerState extends State<MailViewer> {
                       color: Colors.white,
                       padding: const EdgeInsets.all(4),
                       child: SingleChildScrollView(
-                        child: Html(data: _readHtml ?? ''),
+                        // flutter_html parses the message HTML on the UI
+                        // thread: keep the widget unbuilt until a message is
+                        // selected AND its HTML has arrived, instead of
+                        // parsing an empty string on every rebuild.
+                        child: _readHtml == null
+                            ? const Padding(
+                                padding: EdgeInsets.all(18),
+                                child: Center(child: Muted('Loading…', size: 12.5)),
+                              )
+                            : Html(data: _readHtml!),
                       ),
                     ),
                   ),

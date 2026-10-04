@@ -41,19 +41,28 @@ type SessionCard struct {
 }
 
 type Snap struct {
-	Running  bool          `json:"running"`
-	Paused   bool          `json:"paused"`
-	Status   string        `json:"status"`
-	Valid    int           `json:"valid"`
-	Invalid  int           `json:"invalid"`
-	Retries  int           `json:"retries"`
-	Checked  int           `json:"checked"`
-	Total    int           `json:"total"`
-	Daily    int           `json:"daily"`
-	Limit    int           `json:"limit"`
-	UID      string        `json:"uid"`
-	Logs     []string      `json:"logs"`
-	Hits     []string      `json:"hits"`
+	Running bool     `json:"running"`
+	Paused  bool     `json:"paused"`
+	Status  string   `json:"status"`
+	Valid   int      `json:"valid"`
+	Invalid int      `json:"invalid"`
+	Retries int      `json:"retries"`
+	Checked int      `json:"checked"`
+	Total   int      `json:"total"`
+	Daily   int      `json:"daily"`
+	Limit   int      `json:"limit"`
+	UID     string   `json:"uid"`
+	Logs    []string `json:"logs,omitempty"`
+	Hits    []string `json:"hits,omitempty"`
+	// Delta fields: with ?log_from=&hit_from= the server sends only the
+	// lines the client has not seen yet, so the log/hit slices are copied
+	// once when they change instead of on every poll.
+	LogTotal int           `json:"log_total"`
+	HitTotal int           `json:"hit_total"`
+	NewLogs  []string      `json:"new_logs,omitempty"`
+	NewHits  []string      `json:"new_hits,omitempty"`
+	LogReset bool          `json:"log_reset,omitempty"`
+	HitReset bool          `json:"hit_reset,omitempty"`
 	Free     int           `json:"free"`
 	Private  int           `json:"private"`
 	Combo    string        `json:"combo"`
@@ -87,6 +96,11 @@ var (
 	pausedAccum  time.Duration
 	// rolling samples of checked counts for smoother ETA (unix ms, checked)
 	rateSamples [][2]int64
+	// Absolute counts of log/hit lines ever produced this run. The logs/hits
+	// windows keep only the last 80; these sequences let a client ask for
+	// just the lines after the ones it already holds.
+	logSeq int
+	hitSeq int
 	// runGen increments on every start (under mu). A consumer goroutine from
 	// an older run checks it under the same lock and discards its events, so
 	// a stale "Done" from a previous run can never clobber the current run's
@@ -195,28 +209,73 @@ func computeETA(checked, total int) (elapsedStr, etaStr string, rateCPM float64)
 	return elapsedStr, etaStr, rateCPM
 }
 
+// windowDelta returns the entries with absolute index >= from. The window
+// holds only the last N lines, so total is the absolute number of lines
+// produced and win[i] has absolute index total-len(win)+i. truncated tells
+// the client to replace its list with what came back (its position fell out
+// of the window or the counters reset for a new run).
+func windowDelta(win []string, total, from int) (out []string, truncated bool) {
+	if from > total {
+		return append([]string{}, win...), true
+	}
+	if from == total {
+		return nil, false
+	}
+	base := total - len(win)
+	if from < base {
+		return append([]string{}, win...), true
+	}
+	return append([]string{}, win[from-base:]...), false
+}
+
+func parseSeq(v string) (int, bool) {
+	n := 0
+	if _, err := fmt.Sscanf(strings.TrimSpace(v), "%d", &n); err != nil || strings.TrimSpace(v) == "" {
+		return 0, false
+	}
+	return n, true
+}
+
 func HandleState(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	q := r.URL.Query()
+	// lite=1: counters only — the shell poll needs just running/uid and
+	// should not force the log/hit windows to be copied at all.
+	lite := q.Get("lite") == "1"
+	logFrom, hasLogFrom := parseSeq(q.Get("log_from"))
+	hitFrom, hasHitFrom := parseSeq(q.Get("hit_from"))
 	mu.Lock()
 	elapsedStr, etaStr, rateCPM := computeETA(checked, total)
 	s := Snap{
-		Running: atomic.LoadInt32(&running) == 1,
-		Paused:  atomic.LoadInt32(&paused) == 1,
-		Status:  status,
-		Valid:   valid,
-		Invalid: invalid,
-		Retries: retries,
-		Checked: checked,
-		Total:   total,
-		Daily:   core.DailyUsed(),
-		Limit:   core.DailyLimit,
-		UID:     machine.ID(),
-		Logs:    append([]string{}, logs...),
-		Hits:    append([]string{}, hits...),
-		Free:    free,
-		Private: private,
-		Elapsed: elapsedStr,
-		ETA:     etaStr,
-		RateCPM: rateCPM,
+		Running:  atomic.LoadInt32(&running) == 1,
+		Paused:   atomic.LoadInt32(&paused) == 1,
+		Status:   status,
+		Valid:    valid,
+		Invalid:  invalid,
+		Retries:  retries,
+		Checked:  checked,
+		Total:    total,
+		Daily:    core.DailyUsed(),
+		Limit:    core.DailyLimit,
+		UID:      machine.ID(),
+		LogTotal: logSeq,
+		HitTotal: hitSeq,
+		Free:     free,
+		Private:  private,
+		Elapsed:  elapsedStr,
+		ETA:      etaStr,
+		RateCPM:  rateCPM,
+	}
+	if !lite {
+		if hasLogFrom {
+			s.NewLogs, s.LogReset = windowDelta(logs, logSeq, logFrom)
+		} else {
+			s.Logs = append([]string{}, logs...)
+		}
+		if hasHitFrom {
+			s.NewHits, s.HitReset = windowDelta(hits, hitSeq, hitFrom)
+		} else {
+			s.Hits = append([]string{}, hits...)
+		}
 	}
 	mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
@@ -344,6 +403,7 @@ func HandleStart(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	mu.Lock()
 	valid, invalid, retries, checked, total, free, private = 0, 0, 0, 0, 0, 0, 0
 	logs, hits = nil, nil
+	logSeq, hitSeq = 0, 0
 	startedAt = time.Now()
 	pauseStarted = time.Time{}
 	pausedAccum = 0
@@ -384,12 +444,15 @@ func HandleStart(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 				checked++
 				rateSamples = append(rateSamples, [2]int64{time.Now().UnixMilli(), int64(checked)})
 				if len(rateSamples) > 120 {
-					rateSamples = rateSamples[len(rateSamples)-120:]
+					// Reallocate: plain reslicing keeps the old backing array
+					// (and every dropped sample) alive for the whole run.
+					rateSamples = append([][2]int64(nil), rateSamples[len(rateSamples)-120:]...)
 				}
 				if ev.Hit != "" {
 					hits = append(hits, ev.Hit)
+					hitSeq++
 					if len(hits) > 80 {
-						hits = hits[len(hits)-80:]
+						hits = append([]string(nil), hits[len(hits)-80:]...)
 					}
 				}
 			} else if !ev.IsRetry && !ev.IsDone && !ev.LimitHit {
@@ -397,13 +460,14 @@ func HandleStart(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 				checked++
 				rateSamples = append(rateSamples, [2]int64{time.Now().UnixMilli(), int64(checked)})
 				if len(rateSamples) > 120 {
-					rateSamples = rateSamples[len(rateSamples)-120:]
+					rateSamples = append([][2]int64(nil), rateSamples[len(rateSamples)-120:]...)
 				}
 			}
 			if ev.LogMsg != "" {
 				logs = append(logs, ev.LogMsg)
+				logSeq++
 				if len(logs) > 80 {
-					logs = logs[len(logs)-80:]
+					logs = append([]string(nil), logs[len(logs)-80:]...)
 				}
 			}
 			if ev.LimitHit {

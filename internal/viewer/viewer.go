@@ -50,7 +50,29 @@ var (
 	accs []Account
 	stat map[string]any
 	ver  int64
+	// Identity of the valid.txt the cache was built from: page requests
+	// re-parse only when one of these changes, not on every call.
+	loadedPath string
+	loadedSize int64
+	loadedMod  int64
 )
+
+// maybeReload refreshes the cached accounts only when valid.txt actually
+// changed (path, size or mtime), so a page request never re-parses the whole
+// file just because the cache was consulted again.
+func maybeReload() {
+	path := ValidTxtPath()
+	var size, mod int64
+	if info, err := os.Stat(path); err == nil {
+		size, mod = info.Size(), info.ModTime().UnixNano()
+	}
+	mu.Lock()
+	need := accs == nil || path != loadedPath || size != loadedSize || mod != loadedMod
+	mu.Unlock()
+	if need {
+		Load()
+	}
+}
 
 func Load() {
 	path := ValidTxtPath()
@@ -105,6 +127,13 @@ func Load() {
 	st["version"] = ver
 	accs = list
 	stat = st
+	loadedPath = path
+	if info != nil {
+		loadedSize = info.Size()
+		loadedMod = info.ModTime().UnixNano()
+	} else {
+		loadedSize, loadedMod = 0, 0
+	}
 	mu.Unlock()
 }
 
@@ -481,12 +510,8 @@ func accountMatches(a Account, terms []string) bool {
 }
 
 func HandleAccounts(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	maybeReload()
 	mu.Lock()
-	if len(accs) == 0 {
-		mu.Unlock()
-		Load()
-		mu.Lock()
-	}
 	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 	tag := r.URL.Query().Get("tag")
 	country := r.URL.Query().Get("country")
@@ -500,6 +525,35 @@ func HandleAccounts(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	}
 	if limit <= 0 || limit > 60 {
 		limit = 24
+	}
+	// Fast path — no search/tag/country/sort: page straight out of the
+	// cached slice instead of rebuilding and reallocating a match list for
+	// every page request.
+	if q == "" && tag == "" && country == "" && sortKey == "" {
+		total := len(accs)
+		pages := 1
+		if total > 0 {
+			pages = (total + limit - 1) / limit
+		}
+		if page > pages {
+			page = pages
+		}
+		start := (page - 1) * limit
+		if start < 0 {
+			start = 0
+		}
+		if start > total {
+			start = total
+		}
+		end := start + limit
+		if end > total {
+			end = total
+		}
+		pageAccs := append([]Account(nil), accs[start:end]...)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"accounts": pageAccs, "count": total, "page": page, "pages": pages, "limit": limit})
+		return
 	}
 	out := make([]Account, 0, len(accs))
 	terms := strings.Fields(q)
@@ -558,12 +612,8 @@ func HandleAccounts(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 }
 
 func HandleStats(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	maybeReload()
 	mu.Lock()
-	if stat == nil {
-		mu.Unlock()
-		Load()
-		mu.Lock()
-	}
 	st := stat
 	mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")

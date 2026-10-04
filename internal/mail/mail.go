@@ -377,7 +377,28 @@ func loadSessFile() {
 	for k, v := range m {
 		mailSessMap[strings.ToLower(k)] = v
 	}
+	// Expired entries never come back to life — drop them on load instead of
+	// keeping every token from every run in memory and on disk forever.
+	purged := purgeExpiredLocked()
 	mailSessMu.Unlock()
+	if purged {
+		saveSessFile()
+	}
+}
+
+// purgeExpiredLocked removes entries whose Exp has passed. Callers must hold
+// mailSessMu; it reports whether anything was removed so the caller can
+// rewrite tokens.json once.
+func purgeExpiredLocked() bool {
+	now := time.Now()
+	removed := false
+	for k, v := range mailSessMap {
+		if v.Token == "" || v.Exp.IsZero() || !v.Exp.After(now) {
+			delete(mailSessMap, k)
+			removed = true
+		}
+	}
+	return removed
 }
 
 func saveSessFile() {
@@ -407,6 +428,9 @@ func RememberSess(email, token, cid string) {
 		atomic.StoreInt32(&mailSessLoaded, 1)
 	}
 	mailSessMu.Lock()
+	// Prune everything already expired while we hold the lock; saveSessFile
+	// below rewrites tokens.json without them.
+	purgeExpiredLocked()
 	mailSessMap[email] = Sess{Token: token, CID: cid, Exp: time.Now().Add(12 * time.Hour)}
 	mailSessMu.Unlock()
 	saveSessFile()
@@ -419,8 +443,19 @@ func CachedSess(email string) (Sess, bool) {
 	}
 	email = strings.ToLower(strings.TrimSpace(email))
 	mailSessMu.Lock()
-	defer mailSessMu.Unlock()
 	s, ok := mailSessMap[email]
+	expired := false
+	if ok && s.Token != "" && !s.Exp.After(time.Now()) {
+		// An expired entry used to stay in the map and in tokens.json even
+		// though CachedSess rejected it — drop it now.
+		delete(mailSessMap, email)
+		expired = true
+		ok = false
+	}
+	mailSessMu.Unlock()
+	if expired {
+		saveSessFile()
+	}
 	if !ok || s.Token == "" {
 		return Sess{}, false
 	}

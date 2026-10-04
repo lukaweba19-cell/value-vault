@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // FileExists returns true if path exists and is a regular file.
@@ -37,13 +38,20 @@ func ResolveLocalFile(path string) string {
 	return path
 }
 
+// appendMu serializes AppendResult calls: several workers hitting a valid
+// at the same time used to open/write/close the file concurrently, which
+// can interleave partial writes on Windows and split one hit across another.
+var appendMu sync.Mutex
+
 func AppendResult(filename, text string) {
+	appendMu.Lock()
+	defer appendMu.Unlock()
 	f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return
 	}
 	defer f.Close()
-	f.WriteString(text + "\n")
+	_, _ = f.WriteString(text + "\n")
 }
 
 func ParseKeywords(input string) []string {

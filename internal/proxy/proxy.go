@@ -67,6 +67,12 @@ type Pool struct {
 	live []string
 	dead []string
 	i    int
+	// checkAt rotates health-check sweeps through the whole list so proxies
+	// beyond the first 80 are also probed before being handed out.
+	checkAt int
+	// stop terminates the background testPool goroutine when the pool is
+	// dropped at the end of a run.
+	stop chan struct{}
 }
 
 var (
@@ -78,16 +84,29 @@ func EnsurePool(key string, list []string) *Pool {
 	pxPoolsMu.Lock()
 	p := pxPools[key]
 	if p == nil {
-		p = &Pool{all: append([]string{}, list...)}
+		p = &Pool{all: append([]string{}, list...), stop: make(chan struct{})}
 		pxPools[key] = p
-		go testPool(key)
+		go testPool(p)
 	} else if len(list) > 0 && len(list) != len(p.all) {
 		p.mu.Lock()
 		p.all = append([]string{}, list...)
+		p.checkAt = 0
 		p.mu.Unlock()
 	}
 	pxPoolsMu.Unlock()
 	return p
+}
+
+// ResetPools stops every background health-checker and drops the cached
+// pools. Called when a run ends: otherwise the testPool goroutines and the
+// copied proxy lists they hold stay resident for the life of the process.
+func ResetPools() {
+	pxPoolsMu.Lock()
+	for _, p := range pxPools {
+		close(p.stop)
+	}
+	pxPools = map[string]*Pool{}
+	pxPoolsMu.Unlock()
 }
 
 func TakeLive(key string, list []string) string {
@@ -107,26 +126,41 @@ func TakeLive(key string, list []string) string {
 	return s
 }
 
-func testPool(key string) {
+func testPool(p *Pool) {
 	sem := make(chan struct{}, 2)
 	for {
-		pxPoolsMu.Lock()
-		p := pxPools[key]
-		pxPoolsMu.Unlock()
-		if p == nil {
+		select {
+		case <-p.stop:
 			return
+		default:
 		}
 		p.mu.Lock()
 		all := append([]string{}, p.all...)
+		start := p.checkAt
 		p.mu.Unlock()
 		if len(all) == 0 {
-			time.Sleep(8 * time.Second)
+			select {
+			case <-p.stop:
+				return
+			case <-time.After(8 * time.Second):
+			}
 			continue
 		}
+		// Rotate through the ENTIRE list (80 per sweep): the old code only
+		// ever health-checked the first 80 while TakeLive handed out the
+		// unchecked remainder as soon as the live slice was empty.
 		const maxSweep = 80
-		if len(all) > maxSweep {
-			all = all[:maxSweep]
+		if start >= len(all) {
+			start = 0
 		}
+		chunk := make([]string, 0, maxSweep)
+		for k := 0; k < maxSweep && k < len(all); k++ {
+			chunk = append(chunk, all[(start+k)%len(all)])
+		}
+		p.mu.Lock()
+		p.checkAt = (start + len(chunk)) % len(all)
+		p.mu.Unlock()
+		all = chunk
 		for _, px := range all {
 			sem <- struct{}{}
 			go func(px string) {
@@ -156,7 +190,11 @@ func testPool(key string) {
 				p.mu.Unlock()
 			}(px)
 		}
-		time.Sleep(25 * time.Second)
+		select {
+		case <-p.stop:
+			return
+		case <-time.After(25 * time.Second):
+		}
 	}
 }
 

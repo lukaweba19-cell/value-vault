@@ -32,6 +32,13 @@ class _RunViewState extends State<RunView> {
   final _hitsCtrl = ScrollController();
   bool _stickLogs = true;
   bool _stickHits = true;
+  // Locally accumulated log/hit lines. The server sends only the lines we
+  // have not seen yet (log_from/hit_from), so each list is appended to
+  // instead of being rebuilt from the full payload on every poll.
+  final List<String> _logs = [];
+  final List<String> _hits = [];
+  int _logSeq = 0;
+  int _hitSeq = 0;
 
   @override
   void initState() {
@@ -65,7 +72,8 @@ class _RunViewState extends State<RunView> {
   }
 
   Future<void> _tick() async {
-    final r = await Api.get('/api/state');
+    final r =
+        await Api.get('/api/state?log_from=$_logSeq&hit_from=$_hitSeq');
     if (!mounted || r.data is! Map) return;
     final data = Map<String, dynamic>.from(r.data);
     // Rebuild only when the snapshot actually changed: this poll used to
@@ -79,6 +87,7 @@ class _RunViewState extends State<RunView> {
     }
     if (fp == _fp) return;
     _fp = fp;
+    _ingest(data);
     final prev = _logsCtrl.hasClients ? _logsCtrl.offset : 0.0;
     setState(() => _snap = data);
     if (_stickLogs) {
@@ -92,24 +101,46 @@ class _RunViewState extends State<RunView> {
     if (_stickHits) _autoscroll(_hitsCtrl, true);
   }
 
+  // _ingest folds the server's delta (or a legacy full payload) into the
+  // local lists and advances the sequence we will ask for next.
+  void _ingest(Map<String, dynamic> data) {
+    final lt = data['log_total'];
+    if (lt is int) {
+      if (data['log_reset'] == true) _logs.clear();
+      final nl = data['new_logs'];
+      if (nl is List) _logs.addAll(nl.map((e) => '$e'));
+      _logSeq = lt;
+    } else if (data['logs'] is List) {
+      _logs
+        ..clear()
+        ..addAll((data['logs'] as List).map((e) => '$e'));
+      _logSeq = _logs.length;
+    }
+    if (_logs.length > 200) _logs.removeRange(0, _logs.length - 200);
+
+    final ht = data['hit_total'];
+    if (ht is int) {
+      if (data['hit_reset'] == true) _hits.clear();
+      final nh = data['new_hits'];
+      if (nh is List) _hits.addAll(nh.map((e) => '$e'));
+      _hitSeq = ht;
+    } else if (data['hits'] is List) {
+      _hits
+        ..clear()
+        ..addAll((data['hits'] as List).map((e) => '$e'));
+      _hitSeq = _hits.length;
+    }
+    if (_hits.length > 200) _hits.removeRange(0, _hits.length - 200);
+  }
+
   @override
   Widget build(BuildContext context) {
     final s = _snap ?? const <String, dynamic>{};
     final cpm = (s['rate_cpm'] is num) ? (s['rate_cpm'] as num).toDouble() : 0.0;
-    final logs = <String>[];
-    if (s['logs'] is List) {
-      final all = s['logs'] as List;
-      final from = all.length > 80 ? all.length - 80 : 0;
-      for (var i = from; i < all.length; i++) {
-        logs.add('${all[i]}');
-      }
-    }
-    final hits = <String>[];
-    if (s['hits'] is List) {
-      for (final h in s['hits'] as List) {
-        hits.add('$h');
-      }
-    }
+    // Show the last 80 log lines (same window the server keeps), appended
+    // from the local list instead of re-slicing a fresh payload each tick.
+    final logs = _logs.length > 80 ? _logs.sublist(_logs.length - 80) : List<String>.from(_logs);
+    final hits = List<String>.from(_hits);
 
     final tiles = <(String, String)>[
       ('Checked', '${s['checked'] ?? 0} / ${s['total'] ?? 0}'),

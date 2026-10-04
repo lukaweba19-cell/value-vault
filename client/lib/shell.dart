@@ -79,7 +79,10 @@ class _AppShellState extends State<AppShell> {
   }
 
   Future<void> _tick() async {
-    final r = await Api.get('/api/state');
+    // lite=1: the shell only needs running/uid, and must not force the
+    // backend to copy the log/hit windows on every poll — the run view asks
+    // for its own delta of those (one payload producer, no double copy).
+    final r = await Api.get('/api/state?lite=1');
     if (!mounted || r.data is! Map) return;
     final data = r.data as Map;
     final nowLive = data['running'] == true;
