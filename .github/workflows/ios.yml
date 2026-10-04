@@ -5,10 +5,13 @@ name: iOS
 #        - Go checks (same gates as the Windows release workflow),
 #        - the Go engine compiled as a STATIC c-archive for iphoneos
 #          (GOOS=ios GOARCH=arm64 + the iphoneos clang) at
-#          client/ios/solo_libs/libsolo.a — the Podfile force-loads it into
-#          the Runner binary, so dart:ffi finds the Solo* exports through
-#          DynamicLibrary.process() (client/lib/api.dart). No dylib to embed,
-#          nothing extra to sign.
+#          client/ios/solo_libs/libsolo.a — the Runner target's committed
+#          OTHER_LDFLAGS force-load it into the app binary, so dart:ffi
+#          finds the Solo* exports through DynamicLibrary.process()
+#          (client/lib/api.dart). No dylib to embed, nothing extra to sign.
+#          Note: flutter build never runs `pod install` for this project
+#          (zero native plugins → SwiftPM path), which is why the flags
+#          live in project.pbxproj instead of a Podfile.
 #        - Flutter checks, then `flutter build ios --release --no-codesign`.
 #        - Verifies the Solo* exports actually landed in the linked app
 #          binary (nm), then zips Runner.app into iOS-test/solo-checker.ipa
@@ -70,8 +73,20 @@ jobs:
           # GOOS=ios GOARCH=arm64 cross-build with the iphoneos toolchain:
           # the engine becomes a static archive Xcode links into the app
           # binary itself (no dynamic library, no embedded framework — the
-          # archive must survive the link whole, which the Podfile arranges
-          # with -force_load + STRIP/DEAD_CODE stripping disabled).
+          # archive must survive the link whole, which the committed
+          # Runner OTHER_LDFLAGS arrange with -force_load +
+          # STRIP/DEAD_CODE stripping disabled).
+          # Tripwire: if those settings ever vanish from the project file
+          # (e.g. the iOS project is regenerated), fail here instead of
+          # shipping an app without an engine.
+          grep -q 'force_load,${SRCROOT}/solo_libs/libsolo.a' client/ios/Runner.xcodeproj/project.pbxproj || {
+            echo 'Runner OTHER_LDFLAGS no longer force-load the Go archive' >&2
+            exit 1
+          }
+          grep -q 'STRIP_INSTALLED_PRODUCT = NO' client/ios/Runner.xcodeproj/project.pbxproj || {
+            echo 'Runner STRIP_INSTALLED_PRODUCT is not NO — dlsym symbols would be stripped' >&2
+            exit 1
+          }
           CC="$CC" \
           CGO_ENABLED=1 GOOS=ios GOARCH=arm64 \
           CGO_CFLAGS="-arch arm64 -isysroot $SDK -miphoneos-version-min=15.0" \
@@ -179,9 +194,8 @@ jobs:
             exit 0
           fi
           git commit -m "iOS build: unsigned solo-checker.ipa [skip ci]"
-          # pod install + xcodebuild rewrite tracked project files (Podfile
-          # xcconfig includes, Runner.xcodeproj, Flutter xcconfigs). Restore
-          # them to the committed state so the rebase pull has a clean tree —
+          # Restore tracked files to the committed state in case xcodebuild
+          # rewrote any of them, so the rebase pull has a clean tree —
           # build outputs and solo_libs/ are ignored, so they stay put.
           git checkout -- client/ || true
           ok=0

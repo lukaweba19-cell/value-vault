@@ -383,6 +383,17 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				DEAD_CODE_STRIPPING = NO;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-Wl,-force_load,${SRCROOT}/solo_libs/libsolo.a",
+					"-lresolv",
+					"-framework",
+					"Foundation",
+					"-framework",
+					"CoreFoundation",
+				);
+				STRIP_INSTALLED_PRODUCT = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = com.solodolosouls.soloChecker;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -564,6 +575,17 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				DEAD_CODE_STRIPPING = NO;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-Wl,-force_load,${SRCROOT}/solo_libs/libsolo.a",
+					"-lresolv",
+					"-framework",
+					"Foundation",
+					"-framework",
+					"CoreFoundation",
+				);
+				STRIP_INSTALLED_PRODUCT = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = com.solodolosouls.soloChecker;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -586,6 +608,17 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				DEAD_CODE_STRIPPING = NO;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-Wl,-force_load,${SRCROOT}/solo_libs/libsolo.a",
+					"-lresolv",
+					"-framework",
+					"Foundation",
+					"-framework",
+					"CoreFoundation",
+				);
+				STRIP_INSTALLED_PRODUCT = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = com.solodolosouls.soloChecker;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
