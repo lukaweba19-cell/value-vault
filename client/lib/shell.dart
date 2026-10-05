@@ -4,6 +4,7 @@ import 'dart:async';
 import 'dart:io' show exit;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 
 import 'api.dart';
 import 'theme.dart';
@@ -71,12 +72,50 @@ class _AppShellState extends State<AppShell> {
     super.initState();
     _poll = Timer.periodic(const Duration(milliseconds: 1200), (_) => _tick());
     _tick();
+    // Close the soft keyboard the moment the user taps anything that is not
+    // the focused text field. A root GestureDetector can't do this — its tap
+    // loses the gesture arena to every inner widget — so raw pointer routing
+    // is used instead.
+    WidgetsBinding.instance.pointerRouter.addGlobalRoute(_dismissKeyboard);
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.pointerRouter.removeGlobalRoute(_dismissKeyboard);
     _poll?.cancel();
     super.dispose();
+  }
+
+  /// Dismiss the keyboard on a pointer-down outside the focused field.
+  /// Taps that land inside the focused field itself are ignored so
+  /// repositioning the cursor never bounces the keyboard.
+  void _dismissKeyboard(PointerEvent e) {
+    if (e is! PointerDownEvent || !mounted) return;
+    final node = FocusManager.instance.primaryFocus;
+    if (node == null || !node.hasFocus) return;
+    final fctx = node.context;
+    // Only text entry owns the keyboard — never clear other focus targets.
+    if (fctx == null || fctx.widget is! EditableText) return;
+    final focused = fctx.findRenderObject();
+    if (focused != null) {
+      final view = View.maybeOf(context);
+      if (view != null) {
+        final res = HitTestResult();
+        WidgetsBinding.instance.hitTestInView(res, e.position, view.viewId);
+        final hit = <Object>{for (final en in res.path) en.target};
+        RenderObject? r = focused;
+        var inside = false;
+        while (r != null) {
+          if (hit.contains(r)) {
+            inside = true;
+            break;
+          }
+          r = r.parent;
+        }
+        if (inside) return;
+      }
+    }
+    node.unfocus();
   }
 
   Future<void> _tick() async {

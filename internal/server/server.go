@@ -564,11 +564,11 @@ func HandlePause(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 }
 
 func HandlePick(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	title := "Select file"
+	// Seed with the value the non-proxy path actually keeps: the old
+	// "Select file" seed was always overwritten (ineffassign).
+	title := "Select combo file"
 	if r.URL.Query().Get("kind") == "proxy" {
 		title = "Select proxy list"
-	} else {
-		title = "Select combo file"
 	}
 	path := WindowsOpenFile(title)
 	w.Header().Set("Content-Type", "application/json")

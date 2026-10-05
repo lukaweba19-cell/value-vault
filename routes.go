@@ -60,34 +60,3 @@ func newBaseMux() *stdhttp.ServeMux {
 	mux.HandleFunc("/api/mail/view", mail.HandleView)
 	return mux
 }
-
-// newAPIMux is the headless exe's listener: everything the FFI mux serves,
-// plus the R2 self-update endpoints (only meaningful for the standalone exe,
-// which replaces itself via os.Executable()).
-func newAPIMux() *stdhttp.ServeMux {
-	mux := newBaseMux()
-	mux.HandleFunc("/api/update/check", r2store.HandleCheck)
-	mux.HandleFunc("/api/update/apply", r2store.HandleApply)
-	return mux
-}
-
-// newViewerMux is the second listener's route table (viewer-only extras).
-func newViewerMux() *stdhttp.ServeMux {
-	mux := stdhttp.NewServeMux()
-	mux.HandleFunc("/", server.HandleRoot)
-	mux.HandleFunc("/api/valids", viewer.HandleValidList)
-	mux.HandleFunc("/api/accounts", viewer.HandleAccounts)
-	mux.HandleFunc("/api/stats", viewer.HandleStats)
-	mux.HandleFunc("/api/reload", viewer.HandleReload)
-	mux.HandleFunc("/api/events", viewer.HandleEvents)
-	mux.HandleFunc("/api/mail/list", mail.HandleList)
-	mux.HandleFunc("/api/mail/connect", mail.HandleConnect)
-	mux.HandleFunc("/api/mail/probe", mail.HandleProbe)
-	mux.HandleFunc("/api/mail/delete", mail.HandleDelete)
-	mux.HandleFunc("/api/mail/body", mail.HandleBody)
-	mux.HandleFunc("/api/mail/view", mail.HandleView)
-	mux.HandleFunc("/api/proxy-lists", proxy.HandleLists)
-	mux.HandleFunc("/api/proxy-fetch", proxy.HandleFetch)
-	mux.HandleFunc("/api/pick", server.HandlePick)
-	return mux
-}

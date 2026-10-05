@@ -278,10 +278,6 @@ func NewPairProfile(proxyStr string, followTimeout, noRedirTimeout time.Duration
 	return follow, noRedir
 }
 
-func newProxyClient(proxyStr string, timeout time.Duration, followRedirect bool) tls_client.HttpClient {
-	return NewClient(proxyStr, timeout, followRedirect)
-}
-
 func Do(c tls_client.HttpClient, req *http.Request) (*http.Response, error) {
 	if c == nil {
 		return nil, fmt.Errorf("tls client is nil")

@@ -378,19 +378,6 @@ class _EditorViewState extends State<EditorView> {
     });
   }
 
-  Future<void> _saveGenerated() async {
-    var text = _genOut;
-    final head = _sigTextOf(_sigHeadGen).isNotEmpty
-        ? _sigTextOf(_sigHeadGen)
-        : _sigTextOf(_sigHead);
-    final tail = _sigTextOf(_sigTailGen).isNotEmpty
-        ? _sigTextOf(_sigTailGen)
-        : _sigTextOf(_sigTail);
-    if (head.isNotEmpty) text = '${head.trimRight()}\n$text';
-    if (tail.isNotEmpty) text = '${text.trimRight()}\n$tail';
-    await _deliverExport(_genExportName(), text);
-  }
-
   Future<void> _generate() async {
     final r = await Api.post('/api/editor/generate', {
       'users': _users.text,
@@ -946,12 +933,13 @@ class _EditorViewState extends State<EditorView> {
         const SizedBox(height: 12),
         Row(
           children: [
+            // Single export entry point: the modal carries the file name
+            // and signature picks (the old separate Save button duplicated
+            // it).
             TextBtn(
                 label: 'Export generated',
                 kind: BtnKind.primary,
                 onPressed: _openGenExportModal),
-            const SizedBox(width: 8),
-            TextBtn(label: 'Save', onPressed: _saveGenerated),
           ],
         ),
         if (_msg.isNotEmpty)

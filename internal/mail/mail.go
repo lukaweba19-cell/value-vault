@@ -91,9 +91,8 @@ func CaptureOutlookSession(client, noRedir tls_client.HttpClient, ua, email stri
 				if a, ok := tj["access_token"].(string); ok && a != "" {
 					atk = a
 				}
-				if r, ok := tj["refresh_token"].(string); ok && r != "" {
-					rtk = r
-				}
+				// The refreshed refresh_token was written back to rtk but
+				// never read again in this function (ineffassign) — dropped.
 			}
 		}
 	}

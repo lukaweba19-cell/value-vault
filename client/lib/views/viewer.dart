@@ -120,7 +120,7 @@ String wrapMailHTML(String htmlBody, String preview) {
       s = s.replaceFirstMapped(RegExp(r'<head[^>]*>', caseSensitive: false),
           (m) => '${m.group(0)}<base target="_blank">');
     }
-    return s;
+    return _promoteLazyImages(s);
   }
   String esc(String c) =>
       c == '&' ? '&amp;' : c == '<' ? '&lt;' : c == '>' ? '&gt;' : c;
@@ -137,6 +137,138 @@ String wrapMailHTML(String htmlBody, String preview) {
       '$body'
       '</body></html>';
 }
+
+/// Lazy-loaded mail images ship with an empty/missing `src` and the real
+/// URL in a data-* attribute. flutter_html only ever reads `src`, so
+/// without this every lazy image renders as a blank hole in the message.
+String _promoteLazyImages(String s) {
+  // Non-raw literals: a raw single-quoted Dart string cannot contain
+  // quotes, and these patterns need both " and '.
+  final srcRe = RegExp(
+      "\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
+      caseSensitive: false);
+  final lazyRe = RegExp(
+      "\\s(?:data-src|data-original|data-orig-file|data-image-src|data-lazy-src|data-srcset)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')",
+      caseSensitive: false);
+  return s.replaceAllMapped(
+      RegExp(r'<img\b[^>]*>', caseSensitive: false), (m) {
+    final tag = m.group(0)!;
+    final cur = srcRe.firstMatch(tag);
+    final curVal =
+        (cur?.group(1) ?? cur?.group(2) ?? cur?.group(3) ?? '').trim();
+    if (curVal.isNotEmpty) return tag;
+    final lazy = lazyRe.firstMatch(tag);
+    // data-srcset holds a candidate list ("url 1x, url2 2x") — take the
+    // first URL so the promoted value is a plain src.
+    final val =
+        (lazy?.group(1) ?? lazy?.group(2) ?? '').trim().split(RegExp(r'\s+')).first;
+    if (val.isEmpty) return tag;
+    final safe = val.replaceAll('"', '&quot;');
+    if (cur == null) {
+      return tag.replaceFirstMapped(
+          RegExp(r'<img\b', caseSensitive: false), (_) => '<img src="$safe"');
+    }
+    return tag.replaceRange(cur.start, cur.end, ' src="$safe"');
+  });
+}
+
+/// flutter_html has no <video>/<audio> support — the tags parse to an empty
+/// element and the message looks like it failed to load. Render a tappable
+/// player card instead; tapping opens the clip in the platform's default
+/// player / browser.
+final mailMediaExt = TagExtension(
+  tagsToExtend: const {'video', 'audio'},
+  builder: (ctx) {
+    final attrs = ctx.attributes;
+    var src = (attrs['src'] ?? '').trim();
+    if (src.isEmpty) {
+      for (final s in ctx.elementChildren) {
+        final u = (s.attributes['src'] ?? '').trim();
+        if (u.isNotEmpty) {
+          src = u;
+          break;
+        }
+      }
+    }
+    final video = ctx.elementName == 'video';
+    final poster = (attrs['poster'] ?? '').trim();
+    return GestureDetector(
+      onTap: () {
+        if (src.isNotEmpty) openLink(src);
+      },
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 8),
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF2F4F8),
+          border: Border.all(color: const Color(0xFFD7DCE5)),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: SizedBox(
+                width: 64,
+                height: 48,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    if (video && poster.isNotEmpty)
+                      Image.network(
+                        poster,
+                        fit: BoxFit.cover,
+                        errorBuilder: (c, e, s) =>
+                            const ColoredBox(color: Color(0xFF1B2234)),
+                      )
+                    else
+                      const ColoredBox(color: Color(0xFF1B2234)),
+                    const ColoredBox(color: Color(0x59000000)),
+                    Center(
+                      child: Icon(
+                        video
+                            ? Icons.play_arrow_rounded
+                            : Icons.audiotrack_rounded,
+                        color: Colors.white,
+                        size: 26,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    video ? 'Video' : 'Audio',
+                    style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF101828)),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    src.isEmpty ? 'Tap to open' : src,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style:
+                        const TextStyle(fontSize: 11, color: Color(0xFF5F6B84)),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 6),
+            const Icon(Icons.open_in_new_rounded,
+                size: 16, color: Color(0xFF5F6B84)),
+          ],
+        ),
+      ),
+    );
+  },
+);
 
 int jint(dynamic v, [int d = 0]) => v is num ? v.toInt() : d;
 
@@ -1224,8 +1356,15 @@ class _MailViewerState extends State<MailViewer> {
   int _mPane = 1;
   final Map<String, bool> _picked = {};
   bool _selAll = false;
+  // Selection mode: checkboxes + bulk actions only appear after the user
+  // holds a message card, instead of cluttering every row by default.
+  bool _pickMode = false;
   String _listErr = '';
   String? _readHtml;
+
+  /// Display name of the folder we are in (Inbox / Sent / Spam / Deleted).
+  String get _folderLabel =>
+      kFolders.firstWhere((f) => f[0] == _folder, orElse: () => const ['', ''])[1];
 
   String _pxMode = 'file';
   String _pxPath = '';
@@ -1306,6 +1445,7 @@ class _MailViewerState extends State<MailViewer> {
     _listErr = '';
     _query = '';
     _selAll = false;
+    _pickMode = false;
     _pxPath = '';
     _pxUrls = [''];
     _pxFileCount = '0 proxies';
@@ -1411,9 +1551,18 @@ class _MailViewerState extends State<MailViewer> {
       _mails = next;
       _total = total;
       _more = moreFlag;
-      if (!moreReq && added.isNotEmpty) _sel = 0;
+      if (!moreReq && added.isNotEmpty) {
+        if (_compactPane) {
+          // Phone: after a folder switch stay on the list — opening the
+          // first message here is what yanked users into Message pane.
+          _sel = -1;
+          _readHtml = null;
+        } else {
+          _sel = 0;
+        }
+      }
     });
-    if (!moreReq && added.isNotEmpty) _showMail(0);
+    if (!moreReq && added.isNotEmpty && !_compactPane) _showMail(0);
   }
 
   Future<void> _loadSenderPage(String from, bool moreReq) async {
@@ -1468,7 +1617,14 @@ class _MailViewerState extends State<MailViewer> {
       ..more = (total > 0 && newMails.length < total) ||
           (total == 0 && (data['more'] == true || addedN >= 10));
     setState(() => _packs[from] = p);
-    if (!moreReq && _fromFilter == from && newMails.isNotEmpty) _showMail(0);
+    // Same rule as _loadPage: on the compact layout, picking a sender must
+    // land on the message LIST (pane 1), never jump straight to Message.
+    if (!moreReq &&
+        _fromFilter == from &&
+        newMails.isNotEmpty &&
+        !_compactPane) {
+      _showMail(0);
+    }
   }
 
   /* ---- reading ---- */
@@ -2556,12 +2712,16 @@ class _MailViewerState extends State<MailViewer> {
   /* ---- compact pane switcher ---- */
 
   Widget _paneSwitch() {
+    // Center each label: TextBtn lays its Row out start-aligned, which
+    // looked broken once Expanded stretched the buttons out.
     Widget btn(String label, int i) => Expanded(
-          child: TextBtn(
-            label: label,
+          child: Btn(
             kind: _mPane == i ? BtnKind.primary : BtnKind.secondary,
-            padding: const EdgeInsets.symmetric(vertical: 7),
+            padding: const EdgeInsets.symmetric(vertical: 9),
             onPressed: () => setState(() => _mPane = i),
+            child: Center(
+              child: Text(label, textAlign: TextAlign.center),
+            ),
           ),
         );
     return Padding(
@@ -2570,7 +2730,9 @@ class _MailViewerState extends State<MailViewer> {
         children: [
           btn('Folders', 0),
           const SizedBox(width: 8),
-          btn('Inbox', 1),
+          // The middle tab shows the folder we are actually in
+          // (Spam, Sent, …), not a hard-coded "Inbox".
+          btn(_folderLabel.isEmpty ? 'Inbox' : _folderLabel, 1),
           const SizedBox(width: 8),
           btn('Message', 2),
         ],
@@ -2639,6 +2801,8 @@ class _MailViewerState extends State<MailViewer> {
               onTap: () => setState(() {
                 _fromFilter = '';
                 _sel = -1;
+                _pickMode = false;
+                _picked.clear();
                 if (_compactPane) _mPane = 1;
               }),
             ),
@@ -2654,6 +2818,8 @@ class _MailViewerState extends State<MailViewer> {
                   setState(() {
                     _fromFilter = k;
                     _sel = -1;
+                    _pickMode = false;
+                    _picked.clear();
                     if (_compactPane) _mPane = 1;
                   });
                   if (!_packs.containsKey(k)) _loadSenderPage(k, false);
@@ -2668,54 +2834,8 @@ class _MailViewerState extends State<MailViewer> {
                 onPressed: () => setState(() => _senderLimit += 40),
               ),
             ],
-            const SizedBox(height: 16),
-            const Divider(height: 1, color: T.lineSoft),
-            const SizedBox(height: 10),
-            Text('ACTIONS', style: labelStyle()),
-            const SizedBox(height: 7),
-            Row(
-              children: [
-                Checkbox(
-                  value: _selAll,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  visualDensity: VisualDensity.compact,
-                  onChanged: (on) {
-                    final v = on == true;
-                    setState(() {
-                      _selAll = v;
-                      _picked.clear();
-                      if (v) {
-                        for (final m in _activeList) {
-                          final id = '${m['id'] ?? ''}';
-                          if (id.isNotEmpty) _picked[id] = true;
-                        }
-                      }
-                    });
-                  },
-                ),
-                const SizedBox(width: 4),
-                const Text('Select all',
-                    style: TextStyle(fontSize: 12.5, color: T.txt)),
-              ],
-            ),
-            const SizedBox(height: 6),
-            TextBtn(
-              label: 'Delete selected',
-              kind: BtnKind.secondary,
-              onPressed: _deletePicked,
-            ),
-            if (_folder == 'deleted') ...[
-              const SizedBox(height: 6),
-              TextBtn(
-                label: 'Empty deleted',
-                kind: BtnKind.danger,
-                onPressed: _emptyDeleted,
-              ),
-            ],
-            if (_picked.isNotEmpty) ...[
-              const SizedBox(height: 6),
-              Muted('${_picked.length} selected', size: 11.5),
-            ],
+            // Bulk actions (select all / delete) moved out of this tab:
+            // they now appear above the list after a long-press on a card.
           ],
         ),
       ),
@@ -2740,6 +2860,8 @@ class _MailViewerState extends State<MailViewer> {
           _more = false;
           _sel = -1;
           _selAll = false;
+          _pickMode = false;
+          _picked.clear();
           _searchCtrl.clear();
         });
         _loadPage(fromFilterOverride: '');
@@ -2894,6 +3016,22 @@ class _MailViewerState extends State<MailViewer> {
             ],
           ),
           const SizedBox(height: 10),
+          if (_pickMode) ...[
+            _pickBar(),
+            const SizedBox(height: 8),
+          ] else if (_folder == 'deleted') ...[
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextBtn(
+                label: 'Empty deleted',
+                kind: BtnKind.danger,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+                onPressed: _emptyDeleted,
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
           Expanded(
             child: ListView(
               children: [
@@ -2929,8 +3067,77 @@ class _MailViewerState extends State<MailViewer> {
                       onPressed: () => _loadPage(moreReq: true),
                     ),
                   ),
+                if (rows.isNotEmpty && !_pickMode)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8, bottom: 6),
+                    child: Muted('Hold a message to select and delete',
+                        size: 11),
+                  ),
               ],
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Bulk-action bar shown after the user holds a message card:
+  /// select-all bubble, picked count, Delete and Done.
+  Widget _pickBar() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: const Color(0x1F7C5CFF),
+        border: Border.all(color: const Color(0x617C5CFF)),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 4,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Checkbox(
+                value: _selAll,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+                onChanged: (on) {
+                  final v = on == true;
+                  setState(() {
+                    _selAll = v;
+                    _picked.clear();
+                    if (v) {
+                      for (final m in _activeList) {
+                        final id = '${m['id'] ?? ''}';
+                        if (id.isNotEmpty) _picked[id] = true;
+                      }
+                    }
+                  });
+                },
+              ),
+              const Text('Select all',
+                  style: TextStyle(fontSize: 12.5, color: T.txt)),
+            ],
+          ),
+          Tag(text: '${_picked.length} selected', kind: 'red'),
+          TextBtn(
+            label: 'Delete',
+            kind: BtnKind.danger,
+            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
+            disabled: _picked.isEmpty,
+            onPressed: _picked.isEmpty ? null : _deletePicked,
+          ),
+          TextBtn(
+            label: 'Done',
+            kind: BtnKind.secondary,
+            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
+            onPressed: () => setState(() {
+              _pickMode = false;
+              _picked.clear();
+              _selAll = false;
+            }),
           ),
         ],
       ),
@@ -2942,7 +3149,31 @@ class _MailViewerState extends State<MailViewer> {
     final on = _sel == i;
     return InkWell(
       borderRadius: BorderRadius.circular(10),
-      onTap: () => _showMail(i),
+      // In selection mode a tap toggles the checkbox; a long-press enters
+      // it (and picks the held card).
+      onTap: () {
+        if (_pickMode) {
+          setState(() {
+            if (id.isNotEmpty) {
+              if (_picked[id] == true) {
+                _picked.remove(id);
+              } else {
+                _picked[id] = true;
+              }
+            }
+            _selAll = false;
+          });
+          return;
+        }
+        _showMail(i);
+      },
+      onLongPress: id.isEmpty
+          ? null
+          : () => setState(() {
+                _pickMode = true;
+                _picked[id] = true;
+                _selAll = false;
+              }),
       child: Container(
         margin: const EdgeInsets.only(bottom: 4),
         padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 9),
@@ -2955,7 +3186,7 @@ class _MailViewerState extends State<MailViewer> {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (id.isNotEmpty)
+            if (_pickMode && id.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 6),
                 child: Checkbox(
@@ -2994,14 +3225,25 @@ class _MailViewerState extends State<MailViewer> {
                               color: T.txt),
                         ),
                       ),
-                      InkWell(
-                        onTap: () => _deleteMailAt(i),
-                        child: const Padding(
-                          padding: EdgeInsets.all(2),
-                          child: Text('✕',
-                              style: TextStyle(fontSize: 12, color: T.mut)),
+                      if (_pickMode)
+                        InkWell(
+                          borderRadius: BorderRadius.circular(6),
+                          onTap: () => _deleteMailAt(i),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: const Color(0x2E7F1D1D),
+                              border: Border.all(color: T.red),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Text('✕',
+                                style: TextStyle(
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.w800,
+                                    color: T.red)),
+                          ),
                         ),
-                      ),
                     ],
                   ),
                   const SizedBox(height: 5),
@@ -3054,7 +3296,7 @@ class _MailViewerState extends State<MailViewer> {
             children: [
               if (_compactPane) ...[
                 TextBtn(
-                  label: 'Inbox',
+                  label: _folderLabel.isEmpty ? 'Inbox' : _folderLabel,
                   icon: const IconBack(size: 14),
                   padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
                   onPressed: () => setState(() => _mPane = 1),
@@ -3145,7 +3387,19 @@ class _MailViewerState extends State<MailViewer> {
                                 padding: EdgeInsets.all(18),
                                 child: Center(child: Muted('Loading…', size: 12.5)),
                               )
-                            : Html(data: _readHtml!),
+                            : Html(
+                                data: _readHtml!,
+                                // Links inside the mail open externally
+                                // instead of being dead taps.
+                                onLinkTap: (url, attrs, element) {
+                                  if (url != null && url.isNotEmpty) {
+                                    openLink(url);
+                                  }
+                                },
+                                // flutter_html drops <video>/<audio> on the
+                                // floor — render a tappable player card.
+                                extensions: [mailMediaExt],
+                              ),
                       ),
                     ),
                   ),

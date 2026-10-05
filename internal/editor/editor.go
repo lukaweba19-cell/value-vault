@@ -76,31 +76,6 @@ func SortCountsN(m map[string]int, n int) []kvCount {
 	return out
 }
 
-func textFromReq(r *stdhttp.Request) (string, string, error) {
-	var req struct {
-		Path string `json:"path"`
-		Text string `json:"text"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return "", "", err
-	}
-	if strings.TrimSpace(req.Text) != "" {
-		return req.Text, req.Path, nil
-	}
-	p := core.ResolveLocalFile(strings.TrimSpace(req.Path))
-	if p == "" || !core.FileExists(p) {
-		return "", req.Path, fmt.Errorf("file not found")
-	}
-	b, err := os.ReadFile(p)
-	if err != nil {
-		return "", p, err
-	}
-	if len(b) > 20<<20 {
-		b = b[:20<<20]
-	}
-	return string(b), p, nil
-}
-
 func validEmailDomain(d string) string {
 	d = strings.ToLower(strings.Trim(strings.TrimSpace(d), "."))
 	if d == "" || strings.ContainsAny(d, "/\\?#@ ") || !strings.Contains(d, ".") {
@@ -302,9 +277,7 @@ func ParseComboLine(raw string) (email, pass, url, kind string) {
 	if s == "" || s[0] == '#' || (len(s) > 1 && s[0] == '/' && (s[1] == '/' || s[1] == '*')) {
 		return "", "", "", "skip"
 	}
-	if strings.HasPrefix(s, "\ufeff") {
-		s = strings.TrimPrefix(s, "\ufeff")
-	}
+	s = strings.TrimPrefix(s, "\ufeff")
 	if e, p, h, k, ok := parseComboFast(s); ok {
 		return e, p, h, k
 	}
@@ -450,37 +423,6 @@ func editorScanner(r io.Reader) *bufio.Scanner {
 	buf := make([]byte, 1024*1024)
 	sc.Buffer(buf, 8*1024*1024)
 	return sc
-}
-
-func previewEditorFile(path string, n int) (string, int64, error) {
-	p := core.ResolveLocalFile(strings.TrimSpace(path))
-	if p == "" {
-		return "", 0, fmt.Errorf("no file")
-	}
-	f, err := os.Open(p)
-	if err != nil {
-		return "", 0, err
-	}
-	defer f.Close()
-	st, _ := f.Stat()
-	var size int64
-	if st != nil {
-		size = st.Size()
-	}
-	if n <= 0 {
-		n = 80
-	}
-	sc := editorScanner(f)
-	var b strings.Builder
-	i := 0
-	for sc.Scan() && i < n {
-		if i > 0 {
-			b.WriteByte('\n')
-		}
-		b.WriteString(sc.Text())
-		i++
-	}
-	return b.String(), size, sc.Err()
 }
 
 func HandleAnalyzeStream(w stdhttp.ResponseWriter, r *stdhttp.Request) {

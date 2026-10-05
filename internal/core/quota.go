@@ -3,15 +3,9 @@
 package core
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,62 +29,6 @@ func todayStamp() string {
 	return time.Now().Format("2006-01-02")
 }
 
-func quotaKey() []byte {
-	sum := sha256.Sum256([]byte("xbox-checker/daily-quota/v1"))
-	return sum[:]
-}
-
-func sealQuota(date string, count int) string {
-	block, err := aes.NewCipher(quotaKey())
-	if err != nil {
-		return ""
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return ""
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return ""
-	}
-	plain := []byte(fmt.Sprintf("%s|%d", date, count))
-	out := gcm.Seal(nonce, nonce, plain, nil)
-	return base64.StdEncoding.EncodeToString(out)
-}
-
-func openQuota(blob string) (string, int, bool) {
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(blob))
-	if err != nil {
-		return "", 0, false
-	}
-	block, err := aes.NewCipher(quotaKey())
-	if err != nil {
-		return "", 0, false
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", 0, false
-	}
-	ns := gcm.NonceSize()
-	if len(raw) < ns {
-		return "", 0, false
-	}
-	plain, err := gcm.Open(nil, raw[:ns], raw[ns:], nil)
-	if err != nil {
-		return "", 0, false
-	}
-	parts := strings.SplitN(string(plain), "|", 2)
-	if len(parts) != 2 {
-		return "", 0, false
-	}
-	n := 0
-	fmt.Sscanf(parts[1], "%d", &n)
-	if n < 0 {
-		n = 0
-	}
-	return parts[0], n, true
-}
-
 func dropLocalEnv() {
 	_ = os.Remove(DailyEnvFile)
 	_ = os.Remove(".env")
@@ -105,10 +43,6 @@ func LimitMessage() string {
 	reset := NextResetTime()
 	return fmt.Sprintf("Daily valid limit reached (%d). Continue when your daily limit refreshes at %s (%s).",
 		DailyLimit, reset.Format("3:04 PM"), reset.Format("2006-01-02"))
-}
-
-func persistQuotaLocked() {
-	scheduleCloudFlushLocked()
 }
 
 func loadQuotaLocked() {
@@ -235,17 +169,6 @@ func PullQuotaFromCloud() {
 	if remote.Date != today {
 		scheduleCloudFlushLocked()
 	}
-}
-
-func nextResetTime() time.Time {
-	now := time.Now()
-	return time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
-}
-
-func limitMessage() string {
-	reset := nextResetTime()
-	return fmt.Sprintf("Daily valid limit reached (%d). Continue when your daily limit refreshes at %s (%s).",
-		DailyLimit, reset.Format("3:04 PM"), reset.Format("2006-01-02"))
 }
 
 func DailyUsed() int {

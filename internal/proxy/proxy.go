@@ -65,7 +65,6 @@ type Pool struct {
 	mu   sync.Mutex
 	all  []string
 	live []string
-	dead []string
 	i    int
 	// checkAt rotates health-check sweeps through the whole list so proxies
 	// beyond the first 80 are also probed before being handed out.
