@@ -110,6 +110,99 @@ String formatMailDate(dynamic raw) {
   return '${months[d.month]} ${d.day}, at $h12:$mm $am';
 }
 
+/// flutter_html 3.0.0's DeclarationVisitor throws LateInitializationError
+/// (`_currentProperty` still uninitialized) when a stylesheet contains an
+/// @media/@supports expression before its first plain declaration — which
+/// is exactly how real mailbox HTML is written. On device (release) that
+/// build error replaced the whole message body with the grey error box.
+/// Drop at-rules (block AND statement forms) from <style> content; plain
+/// rules and inline style="" attributes keep styling the message.
+String _stripAtRules(String css) {
+  final out = StringBuffer();
+  var i = 0;
+  final n = css.length;
+  bool ident(String c) {
+    final u = c.codeUnitAt(0);
+    return c == '-' || (u >= 65 && u <= 90) || (u >= 97 && u <= 122);
+  }
+
+  while (i < n) {
+    final c = css[i];
+    // Comments and quoted strings are copied verbatim: an '@', '{' or ';'
+    // inside them is content, not syntax.
+    if (c == '/' && i + 1 < n && css[i + 1] == '*') {
+      final end = css.indexOf('*/', i + 2);
+      final stop = end == -1 ? n : end + 2;
+      out.write(css.substring(i, stop));
+      i = stop;
+      continue;
+    }
+    if (c == '"' || c == "'") {
+      var j = i + 1;
+      while (j < n) {
+        if (css[j] == '\\') {
+          j += 2;
+          continue;
+        }
+        if (css[j] == c) {
+          j++;
+          break;
+        }
+        j++;
+      }
+      out.write(css.substring(i, j));
+      i = j;
+      continue;
+    }
+    if (c == '@') {
+      var j = i + 1;
+      while (j < n && ident(css[j])) {
+        j++;
+      }
+      var k = j;
+      while (k < n && ' \t\r\n'.contains(css[k])) {
+        k++;
+      }
+      if (k < n && css[k] == '{') {
+        // Block at-rule: skip its balanced braces.
+        var depth = 0;
+        while (k < n) {
+          final ch = css[k++];
+          if (ch == '{') {
+            depth++;
+          } else if (ch == '}') {
+            depth--;
+            if (depth == 0) break;
+          }
+        }
+        i = k;
+      } else {
+        // Statement at-rule: @import …; / @charset …;
+        while (k < n && css[k] != ';' && css[k] != '}') {
+          k++;
+        }
+        i = (k < n && css[k] == ';') ? k + 1 : k;
+      }
+      continue;
+    }
+    out.write(c);
+    i++;
+  }
+  return out.toString();
+}
+
+/// Runs [_stripAtRules] over every <style> block in [html], keeping each
+/// tag's own attributes.
+String _stripStyleBlocks(String html) => html.replaceAllMapped(
+      RegExp(r'<style\b[^>]*>(.*?)</style>', caseSensitive: false, dotAll: true),
+      (m) {
+        final tag = m.group(0)!;
+        final open = tag.indexOf('>') + 1;
+        return '${tag.substring(0, open)}'
+            '${_stripAtRules(m.group(1) ?? '')}</style>';
+      },
+    );
+
 String wrapMailHTML(String htmlBody, String preview) {
   final raw = htmlBody;
   if (raw.isNotEmpty && RegExp(r'<html', caseSensitive: false).hasMatch(raw)) {
@@ -122,7 +215,7 @@ String wrapMailHTML(String htmlBody, String preview) {
       s = s.replaceFirstMapped(RegExp(r'<head[^>]*>', caseSensitive: false),
           (m) => '${m.group(0)}<base target="_blank">');
     }
-    return _promoteLazyImages(s);
+    return _promoteLazyImages(_stripStyleBlocks(s));
   }
   String esc(String c) =>
       c == '&' ? '&amp;' : c == '<' ? '&lt;' : c == '>' ? '&gt;' : c;
@@ -131,13 +224,13 @@ String wrapMailHTML(String htmlBody, String preview) {
       : '<pre style="white-space:pre-wrap;font:14px/1.55 Segoe UI,Arial,sans-serif;margin:0">'
           '${preview.replaceAllMapped(RegExp(r'[&<>]'), (m) => esc(m.group(0)!))}'
           '</pre>';
-  return '<!DOCTYPE html><html><head><meta charset="utf-8">'
+  return _stripStyleBlocks('<!DOCTYPE html><html><head><meta charset="utf-8">'
       '<meta name="viewport" content="width=device-width,initial-scale=1">'
       '<base target="_blank">'
       '<style>img,video,iframe{max-width:100%;height:auto}table{max-width:100%}</style>'
       '</head><body style="margin:0;padding:16px;background:#fff">'
       '$body'
-      '</body></html>';
+      '</body></html>');
 }
 
 /// Lazy-loaded mail images ship with an empty/missing `src` and the real
@@ -2730,45 +2823,57 @@ class _MailViewerState extends State<MailViewer> {
       decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: T.line)),
       ),
-      child: Row(
-        children: [
-          Container(
-            width: 22,
-            height: 22,
-            decoration: BoxDecoration(
-              color: const Color(0xFF1B2234),
-              border: Border.all(color: T.lineSoft),
-              borderRadius: BorderRadius.circular(7),
+      // The fixed children (eyebrow + pill + Close) measured ~423pt on a
+      // 332pt row: the Row overflowed by 91pt on phones and squeezed the
+      // address to a couple of characters. Narrow bars drop the
+      // "EMAIL VIEWER /" eyebrow — the mail icon keeps the branding — so
+      // the address always has real room.
+      child: LayoutBuilder(builder: (context, box) {
+        final showEyebrow = box.maxWidth >= 430;
+        return Row(
+          children: [
+            Container(
+              width: 22,
+              height: 22,
+              decoration: BoxDecoration(
+                color: const Color(0xFF1B2234),
+                border: Border.all(color: T.lineSoft),
+                borderRadius: BorderRadius.circular(7),
+              ),
+              alignment: Alignment.center,
+              child:
+                  const Icon(Icons.mail_outline, size: 13, color: Colors.white),
             ),
-            alignment: Alignment.center,
-            child: const Icon(Icons.mail_outline, size: 13, color: Colors.white),
-          ),
-          const SizedBox(width: 9),
-          Text('EMAIL VIEWER',
-              style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.6,
-                  color: T.mut)),
-          const SizedBox(width: 9),
-          const Text('/', style: TextStyle(fontSize: 12, color: Color(0xFF46536E))),
-          const SizedBox(width: 9),
-          Expanded(
-            child: Text(widget.account.email,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                    fontSize: 12.5, fontWeight: FontWeight.w700, color: T.txt)),
-          ),
-          const StatusPill(on: true, label: 'Online'),
-          const SizedBox(width: 8),
-          TextBtn(
-            label: 'Close',
-            kind: BtnKind.secondary,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            onPressed: widget.onClose,
-          ),
-        ],
-      ),
+            if (showEyebrow) ...[
+              const SizedBox(width: 9),
+              Text('EMAIL VIEWER',
+                  style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.6,
+                      color: T.mut)),
+              const SizedBox(width: 9),
+              const Text('/',
+                  style: TextStyle(fontSize: 12, color: Color(0xFF46536E))),
+              const SizedBox(width: 9),
+            ],
+            Expanded(
+              child: Text(widget.account.email,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontSize: 12.5, fontWeight: FontWeight.w700, color: T.txt)),
+            ),
+            const StatusPill(on: true, label: 'Online'),
+            const SizedBox(width: 8),
+            TextBtn(
+              label: 'Close',
+              kind: BtnKind.secondary,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              onPressed: widget.onClose,
+            ),
+          ],
+        );
+      }),
     );
   }
 
