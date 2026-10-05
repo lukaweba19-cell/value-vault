@@ -860,81 +860,84 @@ class _ViewerScreenState extends State<ViewerScreen> {
         color: Color(0xEB090C13),
         border: Border(bottom: BorderSide(color: T.line)),
       ),
-      child: Row(
-        children: [
-          Container(
-            width: 22,
-            height: 22,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(7),
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: Image.asset(
-              'assets/solo_icon.png',
+      // On phones the "SOLO Checker /" prefix crowded the page name down
+      // to "Vali…". Narrow bars drop the prefix (the logo keeps the
+      // branding) so "Valid Viewer" always shows in full.
+      child: LayoutBuilder(builder: (context, box) {
+        final showPrefix = box.maxWidth >= 420;
+        return Row(
+          children: [
+            Container(
               width: 22,
               height: 22,
-              fit: BoxFit.cover,
-              errorBuilder: (_, _, _) => const XboxMark(size: 15),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(7),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: Image.asset(
+                'assets/solo_icon.png',
+                width: 22,
+                height: 22,
+                fit: BoxFit.cover,
+                errorBuilder: (_, _, _) => const XboxMark(size: 15),
+              ),
             ),
-          ),
-          const SizedBox(width: 9),
-          Text('SOLO Checker',
-              style:
-                  TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: T.mut)),
-          const SizedBox(width: 9),
-          const Text('/', style: TextStyle(fontSize: 13, color: Color(0xFF46536E))),
-          const SizedBox(width: 9),
-          const Expanded(
-            child: Text('Valid Viewer',
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    fontSize: 13, fontWeight: FontWeight.w700, color: T.txt)),
-          ),
-          const StatusPill(on: true, label: 'Online'),
-          const SizedBox(width: 10),
-          TextBtn(
-            label: 'Back',
-            icon: const IconBack(size: 14),
-            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
-            onPressed: () => Navigator.of(context).pop(),
-          ),
-        ],
-      ),
+            if (showPrefix) ...[
+              const SizedBox(width: 9),
+              Text('SOLO Checker',
+                  style: TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600, color: T.mut)),
+              const SizedBox(width: 9),
+              const Text('/',
+                  style: TextStyle(fontSize: 13, color: Color(0xFF46536E))),
+              const SizedBox(width: 9),
+            ],
+            const Expanded(
+              child: Text('Valid Viewer',
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w700, color: T.txt)),
+            ),
+            const StatusPill(on: true, label: 'Online'),
+            const SizedBox(width: 10),
+            TextBtn(
+              label: 'Back',
+              icon: const IconBack(size: 14),
+              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+          ],
+        );
+      }),
     );
   }
 
   Widget _header(BuildContext context, String file) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    // The file path + timestamps used to sit under the title and wrapped
+    // into a one-word-per-line tower on phones — the path is not shown
+    // anywhere in the header anymore.
+    //
+    // One Wrap instead of a Row: the Row measured the title against the
+    // leftover ~40pt beside the buttons, which broke "Valid Viewer"
+    // mid-word ("Valid / View / er") on phones. Wrap measures the title
+    // at full width first, then flows the buttons beside it when they fit
+    // (desktop) or onto the next line when they don't (phones).
+    return Wrap(
+      spacing: 10,
+      runSpacing: 10,
+      crossAxisAlignment: WrapCrossAlignment.center,
       children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('Valid Viewer',
-                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
-              // The file path + timestamps used to sit under the title and
-              // wrapped into a one-word-per-line tower on phones — the path
-              // is not shown anywhere in the header anymore.
-            ],
-          ),
+        const Text('Valid Viewer',
+            style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
+        TextBtn(
+          label: 'Reload file',
+          kind: BtnKind.secondary,
+          onPressed: _reloadFile,
         ),
-        const SizedBox(width: 12),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            TextBtn(
-              label: 'Reload file',
-              kind: BtnKind.secondary,
-              onPressed: _reloadFile,
-            ),
-            TextBtn(
-              label: 'Export filtered combos',
-              kind: BtnKind.secondary,
-              onPressed: _exportFiltered,
-            ),
-          ],
+        TextBtn(
+          label: 'Export filtered combos',
+          kind: BtnKind.secondary,
+          onPressed: _exportFiltered,
         ),
       ],
     );
