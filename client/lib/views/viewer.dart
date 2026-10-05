@@ -4,8 +4,10 @@
 // mail/*, proxy-lists, proxy-fetch and pick.
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'dart:math' as math;
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_html/flutter_html.dart';
 
@@ -659,22 +661,80 @@ class _ViewerScreenState extends State<ViewerScreen> {
     await _loadAccounts();
   }
 
-  Future<void> _copyAll() async {
-    final uri = Uri(queryParameters: {
-      'q': _fq,
-      'tag': _ftag,
-      'country': _fcountry,
-      'sort': _fsort,
-    });
-    final r = await Api.get('/api/accounts?$uri', base: viewerBase);
+  /// EXPORT every account the current filters match (search, tag, country,
+  /// sort) as `email:pass` lines — the bulk counterpart of the reader's
+  /// single "Copy combo". The list endpoint pages at 60 rows, so every page
+  /// is walked: the old copy silently stopped at the first 24. Windows gets
+  /// the engine's native save dialog, iOS the system share sheet (there is
+  /// no engine-side dialog to show there).
+  Future<void> _exportFiltered() async {
+    _toastMsg('Preparing export…');
+    final rows = <Map<String, dynamic>>[];
+    var page = 1;
+    var pages = 1;
+    do {
+      final uri = Uri(queryParameters: {
+        'q': _fq,
+        'tag': _ftag,
+        'country': _fcountry,
+        'sort': _fsort,
+        'page': '$page',
+        'limit': '60',
+      });
+      final r = await Api.get('/api/accounts?$uri', base: viewerBase);
+      if (!mounted) return;
+      final data = r.data is Map
+          ? Map<String, dynamic>.from(r.data)
+          : <String, dynamic>{};
+      rows.addAll(jmaps(data['accounts']));
+      pages = math.max(1, jint(data['pages'], 1));
+      page += 1;
+    } while (page <= pages);
+
+    final combos = <String>[];
+    for (final a in rows) {
+      final email = '${a['email'] ?? ''}';
+      if (email.isEmpty) continue;
+      combos.add('$email:${a['password'] ?? ''}');
+    }
+    if (combos.isEmpty) {
+      _toastMsg('No matching combos');
+      return;
+    }
+    final text = combos.join('\n');
+    const name = 'filtered-combos.txt';
+    if (Platform.isIOS) {
+      // iOS: hand the bytes to the system share/save sheet — same flow as
+      // the editor's exports — instead of an engine dialog that cannot show.
+      try {
+        final uri = await FilePicker.saveFile(
+          fileName: name,
+          bytes: utf8.encode(text),
+          mimeType: 'text/plain',
+        );
+        if (!mounted) return;
+        _toastMsg(uri == null
+            ? 'Export cancelled'
+            : 'Saved ${combos.length} combos');
+      } catch (e) {
+        if (!mounted) return;
+        _toastMsg('Export failed: $e');
+      }
+      return;
+    }
+    final r = await Api.get('/api/pick-save?name=${Uri.encodeComponent(name)}');
+    final dest = r.data is Map ? '${r.data['path'] ?? ''}' : '';
+    if (dest.isEmpty) {
+      _toastMsg('Export cancelled');
+      return;
+    }
+    final res = await Api.post('/api/editor/save', {'path': dest, 'text': text});
     if (!mounted) return;
-    final data = r.data is Map ? Map<String, dynamic>.from(r.data) : <String, dynamic>{};
-    final emails = jmaps(data['accounts'])
-        .map((a) => '${a['email'] ?? ''}')
-        .where((e) => e.isNotEmpty)
-        .join('\n');
-    final ok = await copyText(emails);
-    _toastMsg(ok ? 'Copied ${jint(data['count'])} emails' : 'Copy failed');
+    _toastMsg(res.ok
+        ? 'Saved ${combos.length} combos'
+        : (res.data is Map && res.data['error'] != null
+            ? '${res.data['error']}'
+            : 'Save failed'));
   }
 
   List<String> get _tagKeys {
@@ -870,9 +930,9 @@ class _ViewerScreenState extends State<ViewerScreen> {
               onPressed: _reloadFile,
             ),
             TextBtn(
-              label: 'Copy filtered emails',
+              label: 'Export filtered combos',
               kind: BtnKind.secondary,
-              onPressed: _copyAll,
+              onPressed: _exportFiltered,
             ),
           ],
         ),
