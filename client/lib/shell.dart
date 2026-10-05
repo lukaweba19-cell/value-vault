@@ -1,7 +1,7 @@
 // App shell: topbar, sidebar navigation, statusbar, view state machine and
 // the update prompt — the Flutter port of dash/main.mjs.
 import 'dart:async';
-import 'dart:io' show exit;
+import 'dart:io' show Platform, exit;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -859,6 +859,11 @@ class _UpdateCheckState extends State<UpdateCheck> {
   }
 
   Future<void> _check() async {
+    // iOS/IPA builds never show the Windows self-update prompt: the
+    // in-app updater swaps the launcher exe + engine DLL from R2, which
+    // does not exist on iPhone — an iOS user can only get a new build by
+    // installing the new IPA, so there is nothing to offer here.
+    if (Platform.isIOS) return;
     final r = await Api.get('/api/update/check');
     if (!mounted) return;
     if (r.data is Map && r.data['ok'] == true && r.data['update'] == true) {
