@@ -1,0 +1,154 @@
+name: lag-inspector
+
+# Static checks for leaks, stuck resources, and patterns that make Go / Flutter /
+# Swift / Python / C / C++ slow. This does not run the app under a profiler.
+# Runtime leaks still need pprof, Instruments, DevTools, or Valgrind on a built binary.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go leaks and hot paths
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache: true
+      - name: vet, race, staticcheck, bodyclose
+        run: |
+          set -o pipefail
+          mkdir -p reports
+          go vet ./... 2>&1 | tee reports/go-vet.txt || echo "vet findings" >> reports/summary.txt
+          # Race detector catches data races that show up as random lag.
+          go test -race -count=1 ./... 2>&1 | tee reports/go-race.txt || echo "race/test findings" >> reports/summary.txt
+          go install honnef.co/go/tools/cmd/staticcheck@v0.5.1
+          # SA* bugs, S* simplifications, ST* style. U1000 unused, SA2001 empty critical section, SA9003 empty branch.
+          "$(go env GOPATH)/bin/staticcheck" -checks "all,-ST1000,-ST1003" ./... 2>&1 | tee reports/staticcheck.txt || echo "staticcheck findings" >> reports/summary.txt
+          go install github.com/timakin/bodyclose@latest
+          # Unclosed HTTP response bodies are a classic leak under load.
+          go vet -vettool="$(go env GOPATH)/bin/bodyclose" ./... 2>&1 | tee reports/bodyclose.txt || echo "bodyclose findings" >> reports/summary.txt
+          go install github.com/gordonklaus/ineffassign@latest
+          ineffassign ./... 2>&1 | tee reports/ineffassign.txt || true
+          # Patterns that usually mean a goroutine or timer is left running.
+          {
+            echo "# goroutine / timer / body leak greps"
+            grep -RIn --include='*.go' -E 'go func|time\.(After|Tick|NewTicker|NewTimer)|http\.(Get|Post|Do)\(' . \
+              --exclude-dir=client --exclude-dir=dist-test --exclude-dir=iOS-test || true
+          } | tee reports/go-hotspots.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: go-inspector
+          path: reports
+
+  flutter:
+    name: Flutter / Dart jank sources
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: analyze
+        run: |
+          set +e
+          mkdir -p ../reports
+          flutter pub get
+          flutter analyze --no-fatal-infos --no-fatal-warnings | tee ../reports/flutter-analyze.txt
+          {
+            echo "# rebuild / leak greps (un-disposed controllers, unbounded lists, sync work in build)"
+            grep -RIn --include='*.dart' -E 'TextEditingController|ScrollController|AnimationController|StreamController|Timer\(|Future\.delayed|setState\(' lib || true
+          } | tee ../reports/dart-hotspots.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: flutter-inspector
+          path: reports
+
+  swift:
+    name: Swift retain and main-thread checks
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: SwiftLint if present, plus retain-cycle grep
+        run: |
+          set +e
+          mkdir -p reports
+          if command -v swiftlint >/dev/null; then
+            swiftlint lint --path client/ios --reporter github | tee reports/swiftlint.txt
+          else
+            brew install swiftlint
+            swiftlint lint --path client/ios --reporter github | tee reports/swiftlint.txt
+          fi
+          {
+            echo "# closures that often retain self, and sync work that stalls the main thread"
+            grep -RIn --include='*.swift' -E '\[weak self\]|\[unowned self\]|DispatchQueue\.main|Thread\.sleep|Data\(contentsOf:' client/ios || true
+          } | tee reports/swift-hotspots.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: swift-inspector
+          path: reports
+
+  c-cpp:
+    name: C and C++ leak and perf hints
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: cppcheck
+        run: |
+          set +e
+          sudo apt-get update && sudo apt-get install -y cppcheck
+          mkdir -p reports
+          cppcheck --enable=warning,performance,portability,style \
+            --inline-suppr --error-exitcode=0 \
+            --suppress=missingIncludeSystem \
+            -I client/windows/runner \
+            client/windows/runner tools 2>&1 | tee reports/cppcheck.txt
+          {
+            echo "# malloc/new without an obvious free/delete nearby"
+            grep -RIn --include='*.c' --include='*.cc' --include='*.cpp' --include='*.h' --include='*.hpp' \
+              -E 'malloc\(|calloc\(|new |new\[|fopen\(' client/windows tools || true
+          } | tee reports/c-hotspots.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cpp-inspector
+          path: reports
+
+  python:
+    name: Python resource leaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: ruff
+        run: |
+          set +e
+          pip install ruff
+          mkdir -p reports
+          ruff check tools --select E,F,B,SIM,RET,PLW --output-format=text | tee reports/ruff.txt
+          {
+            echo "# open/requests/subprocess without a context manager"
+            grep -RIn --include='*.py' -E 'open\(|requests\.|subprocess\.|Popen\(' tools || true
+          } | tee reports/py-hotspots.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: python-inspector
+          path: reports
