@@ -11,7 +11,8 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:ffi/ffi.dart';
-import 'package:flutter/services.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 // Legacy labels: the `base:` parameters the views pass around are kept for
 // API compatibility, but routing happens on the engine's single in-process
@@ -108,27 +109,24 @@ String _ffiCall(String method, String path, String body) {
 class Api {
   static bool _isErr(int code) => code < 200 || code >= 300;
 
-  // iOS native document picker (Runner AppDelegate). The Go engine's file
-  // dialog is Windows-only, so Browse would silently do nothing on iOS.
-  static const MethodChannel _iosPicker =
-      MethodChannel('com.solodolosouls.soloChecker/filePicker');
-
+  // iOS open-file picks run through the file_picker plugin: the Go engine's
+  // file dialog is Windows-only (WindowsOpenFile returns "" elsewhere), so
+  // Browse would silently do nothing on iOS without this.
   static Future<ApiRes> _nativePick() async {
     try {
-      final picked = await _iosPicker.invokeMethod<String>('pickFile');
-      if (picked == null || picked.isEmpty) {
+      final files = await FilePicker.pickFiles();
+      final path = files.isEmpty ? null : files.first.path;
+      if (path == null || path.isEmpty) {
         return ApiRes(ok: false, status: 0, text: 'cancelled');
       }
-      return ApiRes(ok: true, status: 200, data: {'path': picked});
-    } on PlatformException catch (e) {
-      return ApiRes(ok: false, status: 0, text: e.message ?? 'picker failed');
+      return ApiRes(ok: true, status: 200, data: {'path': path});
     } catch (e) {
       return ApiRes(ok: false, status: 0, text: '$e');
     }
   }
 
   static Future<ApiRes> _call(String method, String path, String body) async {
-    // Open-file picks run through Apple's document picker on iOS.
+    // Open-file picks run through the file_picker plugin on iOS.
     // `/api/pick-save` is deliberately left to the engine: it answers with
     // a default export filename, which resolves under Documents/ (the iOS
     // CWD) — there is no dialog to show there.
@@ -375,7 +373,11 @@ class FfiBackend {
   }
 }
 
-Future<void> openLink(String url) =>
-    Api.get('/api/open-link?u=${Uri.encodeComponent(url)}');
+/// Opens a link in the system browser / its app (Telegram etc.) through the
+/// url_launcher plugin — works on every platform the client ships on.
+Future<void> openLink(String url) => launchUrl(
+      Uri.parse(url),
+      mode: LaunchMode.externalApplication,
+    );
 
 String fileBase(String p) => p.split(RegExp(r'[\\/]')).last;

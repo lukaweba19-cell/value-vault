@@ -37,6 +37,8 @@ dependencies:
   flutter_svg: ^2.3.0
   flutter_html: ^3.0.0
   ffi: ^2.2.0
+  file_picker: ^13.1.0
+  url_launcher: ^6.3.3
 
 dependency_overrides:
   # flutter_html 3.0.0 calls the internal qs.matches() helper, which was
