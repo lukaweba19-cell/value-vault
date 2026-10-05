@@ -637,6 +637,10 @@ type filterReq struct {
 	Banner       string
 	BannerEnd    string
 	CountOnly    bool
+	// ReturnText delivers the filtered bytes in the response instead of
+	// writing a destination file — for clients with no save dialog (iOS
+	// shows its own share sheet and decides where the file lands).
+	ReturnText bool
 }
 
 func RunFilter(req filterReq, live func(map[string]any)) map[string]any {
@@ -687,13 +691,22 @@ func RunFilter(req filterReq, live func(map[string]any)) map[string]any {
 		size = int64(len(req.Text))
 	}
 	var bw *bufio.Writer
+	var textBuf *strings.Builder
 	if !req.CountOnly {
-		out, err := os.Create(dest)
-		if err != nil {
-			return map[string]any{"ok": false, "error": err.Error()}
+		if req.ReturnText {
+			// No destination dialog on this platform: collect the
+			// filtered bytes so the response can carry them to the
+			// client's own share/save UI.
+			textBuf = &strings.Builder{}
+			bw = bufio.NewWriterSize(textBuf, 1<<20)
+		} else {
+			out, err := os.Create(dest)
+			if err != nil {
+				return map[string]any{"ok": false, "error": err.Error()}
+			}
+			defer out.Close()
+			bw = bufio.NewWriterSize(out, 1<<20)
 		}
-		defer out.Close()
-		bw = bufio.NewWriterSize(out, 1<<20)
 		if b := strings.TrimSpace(req.Banner); b != "" {
 			_, _ = bw.WriteString(strings.TrimRight(b, "\n") + "\n")
 		}
@@ -750,10 +763,17 @@ func RunFilter(req filterReq, live func(map[string]any)) map[string]any {
 		}
 		_ = bw.Flush()
 	}
-	return map[string]any{
+	res := map[string]any{
 		"ok": true, "extracted": n, "scanned": scanned, "size": size,
 		"dest": dest, "path": dest, "domains": SortCountsN(emailHits, 200), "done": true,
 	}
+	if textBuf != nil {
+		res["text"] = textBuf.String()
+		// Nothing was written to disk — never report a destination.
+		res["dest"] = ""
+		res["path"] = ""
+	}
+	return res
 }
 
 func HandleFilterStream(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -791,6 +811,7 @@ func HandleFilter(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		Banner       string   `json:"banner"`
 		BannerEnd    string   `json:"banner_end"`
 		CountOnly    bool     `json:"count_only"`
+		ReturnText   bool     `json:"return_text"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&raw)
 	req.Path = raw.Path
@@ -804,6 +825,7 @@ func HandleFilter(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	req.Banner = raw.Banner
 	req.BannerEnd = raw.BannerEnd
 	req.CountOnly = raw.CountOnly
+	req.ReturnText = raw.ReturnText
 	res := RunFilter(req, nil)
 	if ok, _ := res["ok"].(bool); !ok {
 		if err, _ := res["error"].(string); err != "" {

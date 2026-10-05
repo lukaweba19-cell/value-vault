@@ -88,6 +88,50 @@ class _EditorViewState extends State<EditorView> {
   StreamSubscription<Map<String, dynamic>>? _anSub;
   StreamSubscription<Map<String, dynamic>>? _fSub;
 
+  // Green status lines are transient: they clear themselves after a few
+  // seconds, and switching tab/view wipes them immediately so "Saved"
+  // never follows the user to another tab.
+  Timer? _msgTimer;
+  Timer? _statusTimer;
+
+  /// In-progress lines must not self-clear — the terminal message that
+  /// replaces them does that, so the pane never blanks mid-run.
+  static bool _progressLine(String m) =>
+      m.endsWith('…') || m.startsWith('Analyzing') || m.startsWith('Filtering');
+
+  void _flashMsg(String m) {
+    _msg = m;
+    _msgTimer?.cancel();
+    if (_progressLine(m)) return;
+    _msgTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted && _msg == m) setState(() => _msg = '');
+    });
+  }
+
+  void _flashStatus(String s) {
+    _filterStatus = s;
+    _statusTimer?.cancel();
+    if (_progressLine(s)) return;
+    _statusTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted && _filterStatus == s) setState(() => _filterStatus = '');
+    });
+  }
+
+  void _clearStatus() {
+    _msgTimer?.cancel();
+    _statusTimer?.cancel();
+    _msg = '';
+    _filterStatus = '';
+  }
+
+  void _setTab(String t) {
+    if (_tab == t) return;
+    setState(() {
+      _clearStatus();
+      _tab = t;
+    });
+  }
+
   @override
   void initState() {
     super.initState();
@@ -102,6 +146,8 @@ class _EditorViewState extends State<EditorView> {
   void dispose() {
     _anSub?.cancel();
     _fSub?.cancel();
+    _msgTimer?.cancel();
+    _statusTimer?.cancel();
     _bannerText.dispose();
     _bannerName.dispose();
     _users.dispose();
@@ -137,6 +183,7 @@ class _EditorViewState extends State<EditorView> {
 
   void _openWork(String m) {
     setState(() {
+      _clearStatus();
       _mode = m;
       _tab = m;
       _view = 'work';
@@ -145,13 +192,13 @@ class _EditorViewState extends State<EditorView> {
 
   void _paint(Map<String, dynamic> d) {
     if (d['error'] != null) {
-      setState(() => _msg = '${d['error']}');
+      setState(() => _flashMsg('${d['error']}'));
       return;
     }
     setState(() {
-      _msg = d['done'] == true
+      _flashMsg(d['done'] == true
           ? 'Analyzed ${d['lines'] ?? 0} lines'
-          : 'Analyzing… ${d['lines'] ?? 0} lines';
+          : 'Analyzing… ${d['lines'] ?? 0} lines');
       if (d['path'] != null) {
         _path = '${d['path']}';
         _pathCtrl.text = _path;
@@ -176,10 +223,10 @@ class _EditorViewState extends State<EditorView> {
   Future<void> _loadFile([String? p0]) async {
     final p = (p0 ?? _path).trim();
     if (p.isEmpty) {
-      setState(() => _msg = 'Choose a file first');
+      setState(() => _flashMsg('Choose a file first'));
       return;
     }
-    setState(() => _msg = 'Analyzing…');
+    setState(() => _flashMsg('Analyzing…'));
     await _anSub?.cancel();
     final stream = await Api.sse(
         '/api/editor/analyze-stream?path=${Uri.encodeComponent(p)}');
@@ -187,7 +234,7 @@ class _EditorViewState extends State<EditorView> {
       _paint(d);
       if (d['done'] == true) {
         _anSub?.cancel();
-        setState(() => _msg = 'Analyzed ${d['lines'] ?? 0} lines');
+        setState(() => _flashMsg('Analyzed ${d['lines'] ?? 0} lines'));
       }
     }, onError: (_) => _anSub?.cancel());
   }
@@ -225,12 +272,8 @@ class _EditorViewState extends State<EditorView> {
 
   Future<void> _saveOne(String kind, String name) async {
     final def = '${name.replaceAll(RegExp(r'[^\w.\-]+'), '_')}.txt';
-    final r = await Api.get('/api/pick-save?name=${Uri.encodeComponent(def)}');
-    if (r.data is! Map || r.data['path'] == null) return;
-    setState(() => _msg = 'Exporting $name…');
     final body = <String, dynamic>{
       'path': _path,
-      'dest': r.data['path'],
       'banner': _sigTextOf(_sigHead),
       'banner_end': _sigTextOf(_sigTail),
     };
@@ -239,23 +282,68 @@ class _EditorViewState extends State<EditorView> {
     } else {
       body['url'] = name;
     }
-    final res = await Api.post('/api/editor/filter', body);
-    if (!res.ok) {
-      setState(() => _msg =
-          (res.data is Map && res.data['error'] != null)
-              ? '${res.data['error']}'
-              : 'Save failed');
+    if (Platform.isIOS) {
+      // No engine-side save dialog exists on iOS: ask the engine for the
+      // filtered bytes and let the system share/save sheet pick the
+      // destination instead of silently dropping the file in Documents/.
+      setState(() => _flashMsg('Preparing $def…'));
+      final res = await Api.post(
+          '/api/editor/filter', {...body, 'return_text': true});
+      if (!mounted) return;
+      final data = res.data is Map ? res.data : null;
+      if (!res.ok || data == null || data['text'] is! String) {
+        setState(() => _flashMsg(_failText(res, data)));
+        return;
+      }
+      await _shareOnIOs(def, data);
       return;
     }
-    setState(() => _msg =
+    final r = await Api.get('/api/pick-save?name=${Uri.encodeComponent(def)}');
+    if (r.data is! Map || r.data['path'] == null) return;
+    setState(() => _flashMsg('Exporting $name…'));
+    final res = await Api.post('/api/editor/filter', body);
+    if (!res.ok) {
+      setState(() => _flashMsg(
+          (res.data is Map && res.data['error'] != null)
+              ? '${res.data['error']}'
+              : 'Save failed'));
+      return;
+    }
+    setState(() => _flashMsg(
         'Saved ${res.data is Map ? res.data['extracted'] ?? 0 : 0} to '
-        '${res.data is Map ? res.data['dest'] ?? r.data['dest'] : r.data['dest']}');
+        '${res.data is Map ? res.data['dest'] ?? r.data['dest'] : r.data['dest']}'));
+  }
+
+  /// Failure text for a filter request: JSON error when the engine sent
+  /// one, otherwise the raw body (stdhttp.Error answers plain text).
+  String _failText(ApiRes res, dynamic data) {
+    if (data != null && data['error'] != null) return '${data['error']}';
+    return res.text.isNotEmpty ? res.text : 'Save failed';
+  }
+
+  /// iOS save flow: hand the produced text to the system share/save sheet.
+  /// [data] is the filter response carrying the bytes in `text`.
+  Future<void> _shareOnIOs(String name, Map<String, dynamic> data) async {
+    try {
+      final uri = await FilePicker.saveFile(
+        fileName: name,
+        bytes: Uint8List.fromList(utf8.encode('${data['text'] ?? ''}')),
+        mimeType: 'text/plain',
+      );
+      if (!mounted) return;
+      setState(() => _flashMsg(uri == null
+          ? 'Save cancelled'
+          : 'Saved ${data['extracted'] ?? 0} combos'));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _flashMsg('Save failed: $e'));
+    }
   }
 
   Future<void> _runFilter() async {
     setState(() {
       _filterState = 'running';
-      _filterStatus = 'Filtering…';
+      _flashStatus('Filtering…');
     });
     await _fSub?.cancel();
     // A file without URLs must never be filtered by a stale URL typed for a
@@ -270,10 +358,10 @@ class _EditorViewState extends State<EditorView> {
         if (d['domains'] is List) _filterAll = _statList(d['domains']);
         if (d['done'] == true) {
           _filterState = 'done';
-          _filterStatus = 'Filtered ${d['extracted'] ?? 0} combos';
+          _flashStatus('Filtered ${d['extracted'] ?? 0} combos');
         } else {
-          _filterStatus =
-              'Filtering… ${d['extracted'] ?? 0} hits / ${d['scanned'] ?? 0} scanned';
+          _flashStatus(
+              'Filtering… ${d['extracted'] ?? 0} hits / ${d['scanned'] ?? 0} scanned');
         }
       });
       if (d['done'] == true) _fSub?.cancel();
@@ -281,7 +369,7 @@ class _EditorViewState extends State<EditorView> {
       _fSub?.cancel();
       setState(() {
         _filterState = 'idle';
-        _filterStatus = 'Filter stopped';
+        _flashStatus('Filter stopped');
       });
     });
   }
@@ -291,28 +379,60 @@ class _EditorViewState extends State<EditorView> {
     final url = effUrl.isEmpty
         ? 'filtered'
         : effUrl.replaceAll(RegExp(r'[^\w.\-]+'), '_');
-    final r = await Api.get('/api/pick-save?name=${Uri.encodeComponent('$url.txt')}');
-    if (r.data is! Map || r.data['path'] == null) return;
-    setState(() => _filterStatus = 'Saving…');
-    final res = await Api.post('/api/editor/filter', {
+    final name = '$url.txt';
+    final filterBody = <String, dynamic>{
       'path': _path,
-      'dest': r.data['path'],
       'email_types': _mailTypes,
       'url': effUrl,
       'banner': _sigTextOf(_sigHead),
       'banner_end': _sigTextOf(_sigTail),
+    };
+    if (Platform.isIOS) {
+      // iOS: no engine-side dialog — the bytes come back in the response
+      // and the system share/save sheet chooses where they land.
+      setState(() => _flashStatus('Preparing export…'));
+      final res = await Api.post(
+          '/api/editor/filter', {...filterBody, 'return_text': true});
+      if (!mounted) return;
+      final data = res.data is Map ? res.data : null;
+      if (!res.ok || data == null || data['text'] is! String) {
+        setState(() => _flashStatus(_failText(res, data)));
+        return;
+      }
+      try {
+        final uri = await FilePicker.saveFile(
+          fileName: name,
+          bytes: Uint8List.fromList(utf8.encode('${data['text'] ?? ''}')),
+          mimeType: 'text/plain',
+        );
+        if (!mounted) return;
+        setState(() => _flashStatus(uri == null
+            ? 'Export cancelled'
+            : 'Saved ${data['extracted'] ?? 0} combos'));
+      } catch (e) {
+        if (!mounted) return;
+        setState(() => _flashStatus('Save failed: $e'));
+      }
+      return;
+    }
+    final r = await Api.get('/api/pick-save?name=${Uri.encodeComponent(name)}');
+    if (r.data is! Map || r.data['path'] == null) return;
+    setState(() => _flashStatus('Saving…'));
+    final res = await Api.post('/api/editor/filter', {
+      'dest': r.data['path'],
+      ...filterBody,
     });
     if (!res.ok) {
-      setState(() => _filterStatus =
+      setState(() => _flashStatus(
           (res.data is Map && res.data['error'] != null)
               ? '${res.data['error']}'
-              : 'Save failed');
+              : 'Save failed'));
       return;
     }
     setState(() {
-      _filterStatus =
+      _flashStatus(
           'Saved ${res.data is Map ? res.data['extracted'] ?? 0 : 0} combos to '
-          '${res.data is Map ? res.data['dest'] ?? '' : ''}';
+          '${res.data is Map ? res.data['dest'] ?? '' : ''}');
     });
   }
 
@@ -352,29 +472,29 @@ class _EditorViewState extends State<EditorView> {
           mimeType: 'text/plain',
         );
         if (uri == null) {
-          setState(() => _msg = 'Export cancelled');
+          setState(() => _flashMsg('Export cancelled'));
         } else {
-          setState(() => _msg = 'Exported $name');
+          setState(() => _flashMsg('Exported $name'));
         }
       } catch (e) {
-        setState(() => _msg = 'Export failed: $e');
+        setState(() => _flashMsg('Export failed: $e'));
       }
       return;
     }
     final r = await Api.get('/api/pick-save?name=${Uri.encodeComponent(name)}');
     final dest = r.data is Map ? r.data['path'] as String? : null;
     if (dest == null || dest.isEmpty) {
-      setState(() => _msg = 'Export cancelled');
+      setState(() => _flashMsg('Export cancelled'));
       return;
     }
-    setState(() => _msg = 'Exporting…');
+    setState(() => _flashMsg('Exporting…'));
     final res = await Api.post('/api/editor/save', {'path': dest, 'text': text});
     setState(() {
-      _msg = res.ok
+      _flashMsg(res.ok
           ? 'Exported to $dest'
           : (res.data is Map && res.data['error'] != null)
               ? '${res.data['error']}'
-              : 'Save failed';
+              : 'Save failed');
     });
   }
 
@@ -407,7 +527,7 @@ class _EditorViewState extends State<EditorView> {
 
   Future<void> _saveSig() async {
     if (_bannerName.text.trim().isEmpty || _bannerText.text.isEmpty) {
-      setState(() => _msg = 'Name and signature text required');
+      setState(() => _flashMsg('Name and signature text required'));
       return;
     }
     final r = await Api.post('/api/editor/banners', {
@@ -415,10 +535,10 @@ class _EditorViewState extends State<EditorView> {
       'text': _bannerText.text,
     });
     if (r.ok) {
-      setState(() => _msg = 'Signature saved');
+      setState(() => _flashMsg('Signature saved'));
       _loadBanners();
     } else {
-      setState(() => _msg = 'Save failed');
+      setState(() => _flashMsg('Save failed'));
     }
   }
 
@@ -638,12 +758,10 @@ class _EditorViewState extends State<EditorView> {
             mainAxisSize: MainAxisSize.min,
             children: [
               if (_mode == 'load')
-                _TabBtn('File', _tab == 'load', () => setState(() => _tab = 'load')),
+                _TabBtn('File', _tab == 'load', () => _setTab('load')),
               if (_mode == 'new')
-                _TabBtn(
-                    'Generate', _tab == 'new', () => setState(() => _tab = 'new')),
-              _TabBtn(
-                  'Signatures', _tab == 'sign', () => setState(() => _tab = 'sign')),
+                _TabBtn('Generate', _tab == 'new', () => _setTab('new')),
+              _TabBtn('Signatures', _tab == 'sign', () => _setTab('sign')),
             ],
           ),
         ),
@@ -656,7 +774,10 @@ class _EditorViewState extends State<EditorView> {
           children: [
             TextBtn(
                 label: 'Back',
-                onPressed: () => setState(() => _view = 'home')),
+                onPressed: () => setState(() {
+                  _clearStatus();
+                  _view = 'home';
+                })),
             const SizedBox(width: 8),
             TextBtn(label: 'Home', onPressed: widget.onHome),
           ],
