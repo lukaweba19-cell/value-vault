@@ -164,24 +164,30 @@ class _RunViewState extends State<RunView> {
     final finished = !active &&
         (statusText.startsWith('Done') || statusText.startsWith('Stopped'));
 
+    // Log panes shrink on short (landscape phone) screens so the page
+    // doesn't become an endless scroll of empty panels.
+    final usableH = MediaQuery.sizeOf(context).height - 150;
+    final paneH = (usableH * 0.5).clamp(150.0, 300.0);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
-          children: [
-            TagW(
-              kind: paused
-                  ? 'warn'
-                  : running
-                      ? 'yellow'
-                      : finished
-                          ? 'green'
-                          : '',
-              child: Text(statusText,
-                  style: const TextStyle(
-                      fontSize: 11, fontWeight: FontWeight.w600)),
-            ),
-            const Spacer(),
+        // Status + controls. On phone widths the Row overflowed, pushing
+        // Pause/Stop off the right edge (portrait) — stack them instead.
+        LayoutBuilder(builder: (context, box) {
+          final status = TagW(
+            kind: paused
+                ? 'warn'
+                : running
+                    ? 'yellow'
+                    : finished
+                        ? 'green'
+                        : '',
+            child: Text(statusText,
+                style: const TextStyle(
+                    fontSize: 11, fontWeight: FontWeight.w600)),
+          );
+          final buttons = <Widget>[
             if (active) ...[
               TextBtn(
                 label: paused ? 'Resume checking' : 'Pause',
@@ -196,22 +202,40 @@ class _RunViewState extends State<RunView> {
                 label: 'Home',
                 icon: const IconBack(size: 14),
                 onPressed: widget.onHome),
-          ],
-        ),
+          ];
+          if (box.maxWidth >= 900) {
+            // Flexible status: a very long run title wraps inside the pill
+            // instead of pushing Stop/Home off the right edge.
+            return Row(children: [
+              Flexible(child: status),
+              const Spacer(),
+              ...buttons,
+            ]);
+          }
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [status, const SizedBox(height: 10),
+              Wrap(spacing: 8, runSpacing: 8, children: buttons)],
+          );
+        }),
         const SizedBox(height: 16),
         LayoutBuilder(builder: (context, box) {
-          final cols = box.maxWidth < 900
+          final cols = box.maxWidth < 560
               ? 2
-              : box.maxWidth < 1300
+              : box.maxWidth < 1100
                   ? 3
                   : 5;
-          return GridView.count(
-            crossAxisCount: cols,
+          // Fixed cell height: the old aspect-ratio grid made 400px-wide
+          // cards ~130px tall in landscape — huge mostly-empty boxes.
+          return GridView(
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
-            crossAxisSpacing: 10,
-            mainAxisSpacing: 10,
-            childAspectRatio: 3.0,
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: cols,
+              crossAxisSpacing: 10,
+              mainAxisSpacing: 10,
+              mainAxisExtent: 74,
+            ),
             children: tiles
                 .map((t) => Container(
                       padding: const EdgeInsets.fromLTRB(13, 11, 13, 11),
@@ -272,6 +296,7 @@ class _RunViewState extends State<RunView> {
             hint: '${logs.length} lines',
             controller: _logsCtrl,
             lines: logs,
+            height: paneH,
             colorOf: (l) {
               // Green = hit, amber = retry/skip notes (not results),
               // red = failures. A wall of red retry lines would look the
@@ -294,6 +319,7 @@ class _RunViewState extends State<RunView> {
             hint: '${hits.length} lines',
             controller: _hitsCtrl,
             lines: hits,
+            height: paneH,
             colorOf: (_) => const Color(0xFFA7F3D0),
             joinWith: '\n',
           );
@@ -343,6 +369,7 @@ class _LogPane extends StatelessWidget {
   final List<String> lines;
   final Color Function(String) colorOf;
   final String joinWith;
+  final double height;
   const _LogPane({
     required this.eyebrow,
     required this.hint,
@@ -350,6 +377,7 @@ class _LogPane extends StatelessWidget {
     required this.lines,
     required this.colorOf,
     this.joinWith = '\n',
+    this.height = 300,
   });
 
   @override
@@ -383,7 +411,7 @@ class _LogPane extends StatelessWidget {
             ),
           ),
           Container(
-            height: 300,
+            height: height,
             color: T.bgSoft,
             padding: const EdgeInsets.fromLTRB(13, 11, 6, 11),
             child: lines.isEmpty

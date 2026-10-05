@@ -61,6 +61,7 @@ class _AppShellState extends State<AppShell> {
   final RunForm form = RunForm();
   String proxyKind = 'file';
   bool live = false;
+  bool pausedRun = false;
   String uid = '';
   String sessionFile = '';
   Timer? _poll;
@@ -86,15 +87,19 @@ class _AppShellState extends State<AppShell> {
     if (!mounted || r.data is! Map) return;
     final data = r.data as Map;
     final nowLive = data['running'] == true;
+    // Paused runs still count as live, but the top bar must say Paused —
+    // showing "Checking" while workers wait is what confused the tester.
+    final nowPaused = data['paused'] == true;
     var nowUid = uid;
     final u = data['uid'];
     if (u is String && u.isNotEmpty) nowUid = u;
     // Only rebuild when something actually changed. This poll used to call
     // setState every 1.2s, which rebuilt every view under the cursor and
     // reset focused text fields mid-typing.
-    if (nowLive != live || nowUid != uid) {
+    if (nowLive != live || nowPaused != pausedRun || nowUid != uid) {
       setState(() {
         live = nowLive;
+        pausedRun = nowPaused;
         uid = nowUid;
       });
     }
@@ -222,7 +227,11 @@ class _AppShellState extends State<AppShell> {
       body: appBackdrop(
         Column(
           children: [
-            _TopBar(live: live, viewLabel: _viewLabel, showMenu: compact),
+            _TopBar(
+                live: live,
+                paused: pausedRun,
+                viewLabel: _viewLabel,
+                showMenu: compact),
             Expanded(
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -317,10 +326,14 @@ class _AppShellState extends State<AppShell> {
 
 class _TopBar extends StatelessWidget {
   final bool live;
+  final bool paused;
   final String viewLabel;
   final bool showMenu;
   const _TopBar(
-      {required this.live, required this.viewLabel, this.showMenu = false});
+      {required this.live,
+      this.paused = false,
+      required this.viewLabel,
+      this.showMenu = false});
 
   @override
   Widget build(BuildContext context) {
@@ -381,7 +394,9 @@ class _TopBar extends StatelessWidget {
                   fontSize: 13, fontWeight: FontWeight.w700, color: T.txt),
             ),
           ),
-          StatusPill(on: true, label: live ? 'Checking' : 'Connected'),
+          StatusPill(
+              on: true,
+              label: live ? (paused ? 'Paused' : 'Checking') : 'Connected'),
         ],
       ),
     );

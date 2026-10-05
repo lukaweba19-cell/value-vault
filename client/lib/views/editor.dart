@@ -1,7 +1,11 @@
 // Dashboard: combo editor — port of dash/editor.mjs (load/clean, generate,
 // signatures) with SSE streams for analyze + filter.
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../api.dart';
@@ -313,43 +317,78 @@ class _EditorViewState extends State<EditorView> {
   }
 
   Future<void> _exportGenerated() async {
-    final r = await Api.get('/api/pick-save?name=combos-export.txt');
-    if (r.data is! Map || r.data['path'] == null) return;
-    String text = _genOut;
+    await _deliverExport(_genExportName(), _genExportText());
+  }
+
+  /// FILE NAME from the export form — a bare name (the platform save UI
+  /// decides where it lands), with a .txt default.
+  String _genExportName() {
+    var n = _savePathGen.text.trim().split(RegExp(r'[\\/]')).last.trim();
+    n = n.replaceAll(RegExp(r'[^\w.\- ]+'), '_');
+    if (n.isEmpty) n = 'combos-export.txt';
+    if (!n.contains('.')) n = '$n.txt';
+    return n;
+  }
+
+  String _genExportText() {
+    var text = _genOut;
     final head = _sigTextOf(_sigHeadGen);
     final tail = _sigTextOf(_sigTailGen);
     if (head.isNotEmpty) text = '${head.trimRight()}\n$text';
     if (tail.isNotEmpty) text = '${text.trimRight()}\n$tail';
-    await Api.post('/api/editor/save', {
-      'path': r.data['path'],
-      'text': text,
+    return text;
+  }
+
+  /// Hands the finished text to the platform save UI. iOS gets the system
+  /// export/share sheet through file_picker (instead of silently dropping
+  /// the file into Documents/); Windows shows the engine's native save
+  /// dialog, pre-filled with the name the user typed.
+  Future<void> _deliverExport(String name, String text) async {
+    if (Platform.isIOS) {
+      try {
+        final uri = await FilePicker.saveFile(
+          fileName: name,
+          bytes: Uint8List.fromList(utf8.encode(text)),
+          mimeType: 'text/plain',
+        );
+        if (uri == null) {
+          setState(() => _msg = 'Export cancelled');
+        } else {
+          setState(() => _msg = 'Exported $name');
+        }
+      } catch (e) {
+        setState(() => _msg = 'Export failed: $e');
+      }
+      return;
+    }
+    final r = await Api.get('/api/pick-save?name=${Uri.encodeComponent(name)}');
+    final dest = r.data is Map ? r.data['path'] as String? : null;
+    if (dest == null || dest.isEmpty) {
+      setState(() => _msg = 'Export cancelled');
+      return;
+    }
+    setState(() => _msg = 'Exporting…');
+    final res = await Api.post('/api/editor/save', {'path': dest, 'text': text});
+    setState(() {
+      _msg = res.ok
+          ? 'Exported to $dest'
+          : (res.data is Map && res.data['error'] != null)
+              ? '${res.data['error']}'
+              : 'Save failed';
     });
   }
 
   Future<void> _saveGenerated() async {
-    var p = _savePathGen.text.trim();
-    if (p.isEmpty) {
-      final r = await Api.get('/api/pick-save');
-      p = (r.data is Map ? r.data['path'] as String? : null) ?? 'combos-export.txt';
-      _savePathGen.text = p;
-    }
-    final res = await Api.post('/api/editor/save', {
-      'path': p,
-      'text': _genOut,
-      'banner': _sigTextOf(_sigHeadGen).isNotEmpty
-          ? _sigTextOf(_sigHeadGen)
-          : _sigTextOf(_sigHead),
-      'banner_end': _sigTextOf(_sigTailGen).isNotEmpty
-          ? _sigTextOf(_sigTailGen)
-          : _sigTextOf(_sigTail),
-    });
-    if (res.ok) {
-      setState(() => _msg = 'Exported to $p');
-    } else {
-      setState(() => _msg = (res.data is Map && res.data['error'] != null)
-          ? '${res.data['error']}'
-          : 'Save failed');
-    }
+    var text = _genOut;
+    final head = _sigTextOf(_sigHeadGen).isNotEmpty
+        ? _sigTextOf(_sigHeadGen)
+        : _sigTextOf(_sigHead);
+    final tail = _sigTextOf(_sigTailGen).isNotEmpty
+        ? _sigTextOf(_sigTailGen)
+        : _sigTextOf(_sigTail);
+    if (head.isNotEmpty) text = '${head.trimRight()}\n$text';
+    if (tail.isNotEmpty) text = '${text.trimRight()}\n$tail';
+    await _deliverExport(_genExportName(), text);
   }
 
   Future<void> _generate() async {
@@ -492,23 +531,7 @@ class _EditorViewState extends State<EditorView> {
             const SizedBox(height: 12),
             Text('FILE NAME', style: labelStyle()),
             const SizedBox(height: 6),
-            Row(
-              children: [
-                Expanded(
-                  child: TextInput(
-                      hint: 'combos-export.txt',
-                      controller: _savePathGen),
-                ),
-                const SizedBox(width: 8),
-                TextBtn(label: 'Browse', onPressed: () async {
-                  final r = await Api.get('/api/pick-save');
-                  if (r.data is Map && r.data['path'] != null) {
-                    _savePathGen.text = '${r.data['path']}';
-                    setModal(() {});
-                  }
-                }),
-              ],
-            ),
+            TextInput(hint: 'combos-export.txt', controller: _savePathGen),
             const SizedBox(height: 12),
             Text('START SIGNATURE', style: labelStyle()),
             const SizedBox(height: 6),
@@ -562,7 +585,11 @@ class _EditorViewState extends State<EditorView> {
             physics: const NeverScrollableScrollPhysics(),
             crossAxisSpacing: 12,
             mainAxisSpacing: 12,
-            childAspectRatio: cols == 1 ? 3.0 : 2.1,
+            // 1 column was 3.0 (height = width/3): the card content is
+            // ~140px tall, so the description rendered clipped at the card
+            // edge on phones. Give single-column cards the same room as the
+            // two-up desktop grid.
+            childAspectRatio: 2.1,
             children: [
               ChoiceCard(
                 icon: const IcoBox(child: IconDownload(size: 18)),

@@ -721,10 +721,9 @@ class _ViewerScreenState extends State<ViewerScreen> {
             children: [
               const Text('Valid Viewer',
                   style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
-              const SizedBox(height: 5),
-              Muted(
-                  '$file · modified ${_stats['modified'] ?? '—'} · loaded ${_stats['loaded_at'] ?? '—'}',
-                  size: 12.5),
+              // The file path + timestamps used to sit under the title and
+              // wrapped into a one-word-per-line tower on phones — the path
+              // is not shown anywhere in the header anymore.
             ],
           ),
         ),
@@ -965,23 +964,19 @@ class _ViewerScreenState extends State<ViewerScreen> {
           const SizedBox(width: 10),
           Container(width: 1, height: 12, color: T.line),
           const SizedBox(width: 10),
-          Expanded(
-            child: Text(file,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                    fontSize: 11.5,
-                    fontWeight: FontWeight.w600,
-                    color: Color(0xFFB6C2D8))),
-          ),
-          Text('Valid Viewer',
-              style: const TextStyle(
+          // No file path here either — keep the bar to status + counts.
+          const Spacer(),
+          const Text('Valid Viewer',
+              style: TextStyle(
                   fontSize: 11.5,
                   fontWeight: FontWeight.w600,
                   color: Color(0xFFB6C2D8))),
           const SizedBox(width: 10),
           Container(width: 1, height: 12, color: T.line),
           const SizedBox(width: 10),
-          Text('$_count account(s) matched', style: mutedStyle(11.5)),
+          Flexible(
+              child: Text('$_count account(s) matched',
+                  overflow: TextOverflow.ellipsis, style: mutedStyle(11.5))),
         ],
       ),
     );
@@ -1223,6 +1218,10 @@ class _MailViewerState extends State<MailViewer> {
   int _total = 0;
   bool _more = false;
   int _sel = -1;
+  // Compact (phone) mail layout: one pane at a time — 0 folders, 1 inbox,
+  // 2 message — instead of the horizontal scroller that hid the inbox.
+  bool _compactPane = false;
+  int _mPane = 1;
   final Map<String, bool> _picked = {};
   bool _selAll = false;
   String _listErr = '';
@@ -1480,6 +1479,7 @@ class _MailViewerState extends State<MailViewer> {
     final m = list[i];
     setState(() {
       _sel = i;
+      if (_compactPane) _mPane = 2;
       _listErr = '';
       _readHtml = wrapMailHTML('${m['html'] ?? ''}', '${m['preview'] ?? ''}');
     });
@@ -1573,6 +1573,8 @@ class _MailViewerState extends State<MailViewer> {
       _selAll = false;
       _delAsk = null;
       _readHtml = null;
+      // Deleted from the read pane → land back on the inbox list on phone.
+      if (_compactPane) _mPane = 1;
     });
   }
 
@@ -2464,10 +2466,12 @@ class _MailViewerState extends State<MailViewer> {
             _mainHead(context),
             Expanded(
               child: LayoutBuilder(builder: (context, box) {
-                final side = _sidePane();
-                final list = _listPane();
+                final compact = box.maxWidth < 1120;
+                _compactPane = compact;
+                final side = _sidePane(fill: compact);
+                final list = _listPane(fill: compact);
                 final read = _readPane();
-                if (box.maxWidth >= 1120) {
+                if (!compact) {
                   return Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
@@ -2477,16 +2481,21 @@ class _MailViewerState extends State<MailViewer> {
                     ],
                   );
                 }
-                return SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      SizedBox(width: 240, child: side),
-                      SizedBox(width: 350, child: list),
-                      SizedBox(width: math.max(420.0, box.maxWidth - 590), child: read),
-                    ],
-                  ),
+                // Phone / small tablet: show one pane at a time behind a
+                // switcher — the old horizontal scroller forced a sideways
+                // drag and the inbox sat half off-screen.
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _paneSwitch(),
+                    Expanded(
+                      child: switch (_mPane) {
+                        0 => side,
+                        1 => list,
+                        _ => read,
+                      },
+                    ),
+                  ],
                 );
               }),
             ),
@@ -2544,9 +2553,34 @@ class _MailViewerState extends State<MailViewer> {
     );
   }
 
+  /* ---- compact pane switcher ---- */
+
+  Widget _paneSwitch() {
+    Widget btn(String label, int i) => Expanded(
+          child: TextBtn(
+            label: label,
+            kind: _mPane == i ? BtnKind.primary : BtnKind.secondary,
+            padding: const EdgeInsets.symmetric(vertical: 7),
+            onPressed: () => setState(() => _mPane = i),
+          ),
+        );
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+      child: Row(
+        children: [
+          btn('Folders', 0),
+          const SizedBox(width: 8),
+          btn('Inbox', 1),
+          const SizedBox(width: 8),
+          btn('Message', 2),
+        ],
+      ),
+    );
+  }
+
   /* ---- side pane (folders / senders / actions) ---- */
 
-  Widget _sidePane() {
+  Widget _sidePane({bool fill = false}) {
     final counts = <String, int>{};
     for (final m in _mails) {
       final k = senderKeyOf(m['from']);
@@ -2556,11 +2590,13 @@ class _MailViewerState extends State<MailViewer> {
       ..sort((a, b) => counts[b]!.compareTo(counts[a]!));
 
     return Container(
-      width: 250,
+      width: fill ? double.infinity : 250,
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 14),
-      decoration: const BoxDecoration(
-        border: Border(right: BorderSide(color: T.line)),
-      ),
+      decoration: fill
+          ? null
+          : const BoxDecoration(
+              border: Border(right: BorderSide(color: T.line)),
+            ),
       child: SingleChildScrollView(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -2603,6 +2639,7 @@ class _MailViewerState extends State<MailViewer> {
               onTap: () => setState(() {
                 _fromFilter = '';
                 _sel = -1;
+                if (_compactPane) _mPane = 1;
               }),
             ),
             for (final k in senderKeys.take(_senderLimit))
@@ -2617,6 +2654,7 @@ class _MailViewerState extends State<MailViewer> {
                   setState(() {
                     _fromFilter = k;
                     _sel = -1;
+                    if (_compactPane) _mPane = 1;
                   });
                   if (!_packs.containsKey(k)) _loadSenderPage(k, false);
                 },
@@ -2692,6 +2730,7 @@ class _MailViewerState extends State<MailViewer> {
         setState(() {
           _folder = id;
           _fromFilter = '';
+          if (_compactPane) _mPane = 1;
           _appliedQuery = 'kind:email';
           _packs.clear();
           _picked.clear();
@@ -2776,7 +2815,7 @@ class _MailViewerState extends State<MailViewer> {
 
   /* ---- list pane ---- */
 
-  Widget _listPane() {
+  Widget _listPane({bool fill = false}) {
     final q = _query.trim().toLowerCase();
     final active = _activeList;
     final rows = <MapEntry<int, Map<String, dynamic>>>[];
@@ -2799,11 +2838,13 @@ class _MailViewerState extends State<MailViewer> {
         orElse: () => ['', ''])[1];
 
     return Container(
-      width: 370,
+      width: fill ? double.infinity : 370,
       padding: const EdgeInsets.fromLTRB(13, 12, 13, 10),
-      decoration: const BoxDecoration(
-        border: Border(right: BorderSide(color: T.line)),
-      ),
+      decoration: fill
+          ? null
+          : const BoxDecoration(
+              border: Border(right: BorderSide(color: T.line)),
+            ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -3011,6 +3052,15 @@ class _MailViewerState extends State<MailViewer> {
           ),
           child: Row(
             children: [
+              if (_compactPane) ...[
+                TextBtn(
+                  label: 'Inbox',
+                  icon: const IconBack(size: 14),
+                  padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+                  onPressed: () => setState(() => _mPane = 1),
+                ),
+                const SizedBox(width: 8),
+              ],
               TextBtn(
                 label: 'Delete',
                 kind: BtnKind.danger,
