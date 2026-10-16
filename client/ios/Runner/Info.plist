@@ -59,6 +59,14 @@
 			</array>
 		</dict>
 	</dict>
+	<!-- Background keep-alive: the app "plays" a looping buffer of pure
+	     digital silence while backgrounded (see SilentAudioManager.swift) so
+	     long checks and mail sync keep running. mixWithOthers + zero samples
+	     mean the user's own music, calls and Siri are never affected. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIFileSharingEnabled</key>

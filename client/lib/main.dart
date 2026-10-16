@@ -7,6 +7,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import 'api.dart';
+import 'background_audio.dart';
 import 'boot.dart';
 import 'shell.dart';
 import 'theme.dart';
@@ -14,6 +15,11 @@ import 'theme.dart';
 void main() {
   runZonedGuarded(() async {
     WidgetsFlutterBinding.ensureInitialized();
+
+    // iOS background keep-alive: when the app is backgrounded, ask the native
+    // side to start its inaudible silent-audio loop so long checks and mail
+    // sync keep running; disabled again on return to the foreground.
+    BackgroundAudio.instance.install();
 
     // Single instance: the OS mutex refuses a second window. The old code
     // returned from main() without ever calling runApp, which left a hidden
