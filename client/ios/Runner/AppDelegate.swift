@@ -21,7 +21,7 @@ import UIKit
     // checks and mail sync keep running while the app is in the background.
     let channel = FlutterMethodChannel(
       name: "solo_checker/background_audio",
-      binaryMessenger: engineBridge.applicationRegistrar.messenger
+      binaryMessenger: engineBridge.applicationRegistrar.messenger()
     )
     channel.setMethodCallHandler { call, result in
       switch call.method {
